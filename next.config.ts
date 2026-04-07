@@ -7,6 +7,8 @@ const withPWA = withPWAInit({
   register: true,
 });
 
-const nextConfig: NextConfig = {};
+const nextConfig: NextConfig = {
+  devIndicators: false,
+};
 
 export default withPWA(nextConfig);

@@ -1,6 +1,5 @@
 import {
-  Home,
-  CalendarCheck,
+  CalendarDays,
   Users,
   CreditCard,
   BarChart3,
@@ -15,8 +14,7 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { label: "홈", href: "/", icon: Home },
-  { label: "출석", href: "/attendance", icon: CalendarCheck },
+  { label: "시간표", href: "/", icon: CalendarDays },
   { label: "학생", href: "/students", icon: Users },
   { label: "결제", href: "/payments", icon: CreditCard },
   { label: "통계", href: "/analytics", icon: BarChart3 },
@@ -24,9 +22,9 @@ export const NAV_ITEMS: NavItem[] = [
 ];
 
 export const BOTTOM_NAV_ITEMS: NavItem[] = [
-  { label: "홈", href: "/", icon: Home },
-  { label: "출석", href: "/attendance", icon: CalendarCheck },
+  { label: "시간표", href: "/", icon: CalendarDays },
   { label: "학생", href: "/students", icon: Users },
   { label: "결제", href: "/payments", icon: CreditCard },
-  { label: "더보기", href: "/settings", icon: Settings },
+  { label: "통계", href: "/analytics", icon: BarChart3 },
+  { label: "설정", href: "/settings", icon: Settings },
 ];
