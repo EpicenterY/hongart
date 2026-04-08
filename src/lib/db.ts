@@ -426,7 +426,7 @@ export async function getAttendanceByStudentId(studentId: string): Promise<Atten
 }
 
 export async function getAttendanceByDate(dateStr: string): Promise<(AttendanceRecord & { studentName: string })[]> {
-  const target = new Date(dateStr + "T00:00:00+09:00");
+  const target = new Date(dateStr + "T00:00:00Z");
   const nextDay = new Date(target.getTime() + 24 * 60 * 60 * 1000);
 
   const rows = await prisma.attendance.findMany({
@@ -814,7 +814,7 @@ export async function getDateStatus(dateStr: string): Promise<DateStatus> {
   if (holiday) return { status: "holiday", name: holiday.name };
   if (vacations.length > 0) return { status: "vacation", name: vacations[0].name };
 
-  const dayOfWeek = new Date(dateStr + "T00:00:00+09:00").getDay();
+  const dayOfWeek = new Date(dateStr + "T00:00:00Z").getDay();
   const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   const dayName = dayNames[dayOfWeek];
   if (!settings.enabledDays.includes(dayName)) {
@@ -924,13 +924,13 @@ export async function deleteScheduleOverride(id: string): Promise<boolean> {
 export async function getDashboardStats(): Promise<DashboardStats> {
   const now = new Date();
   const todayStr = toKSTDateStr(now);
-  const todayStart = new Date(todayStr + "T00:00:00+09:00");
+  const todayStart = new Date(todayStr + "T00:00:00Z");
   const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
 
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const monthStart = new Date(currentMonth + "-01T00:00:00+09:00");
+  const monthStart = new Date(currentMonth + "-01T00:00:00Z");
   const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const monthEnd = new Date(toKSTDateStr(nextMonth) + "T00:00:00+09:00");
+  const monthEnd = new Date(toKSTDateStr(nextMonth) + "T00:00:00Z");
 
   // Parallel queries
   const [
@@ -983,7 +983,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     const d = new Date(monday);
     d.setDate(monday.getDate() + i);
     const dateStr = toKSTDateStr(d);
-    const dayStart = new Date(dateStr + "T00:00:00+09:00");
+    const dayStart = new Date(dateStr + "T00:00:00Z");
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
     const count = await prisma.attendance.count({
@@ -1017,9 +1017,9 @@ export async function getAnalyticsData(periodMonths: number = 3): Promise<Analyt
   for (let i = periodMonths - 1; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const monthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const mStart = new Date(monthStr + "-01T00:00:00+09:00");
+    const mStart = new Date(monthStr + "-01T00:00:00Z");
     const mNext = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    const mEnd = new Date(toKSTDateStr(mNext) + "T00:00:00+09:00");
+    const mEnd = new Date(toKSTDateStr(mNext) + "T00:00:00Z");
 
     const monthRecords = await prisma.attendance.findMany({
       where: { date: { gte: mStart, lt: mEnd } },

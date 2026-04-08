@@ -207,7 +207,7 @@ async function main() {
     studentId: studentIdMap.get(id)!,
     daysPerWeek: dpw,
     schedule: (schedMap.get(id) ?? []) as unknown as object[],
-    startDate: new Date("2025-04-01T00:00:00+09:00"),
+    startDate: new Date("2025-04-01T00:00:00Z"),
     monthlyFee: feeMap[dpw] ?? 100000,
     isActive: true,
   }));
@@ -271,7 +271,7 @@ async function main() {
     for (const d of dates) {
       allAtt.push({
         studentId: uuid,
-        date: new Date(`${d}T00:00:00+09:00`),
+        date: new Date(`${d}T00:00:00Z`),
         status: "PRESENT",
         checkInAt: new Date(`${d}T15:05:00+09:00`),
         note: null,

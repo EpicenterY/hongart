@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (subscription) {
-      const subStartDate = new Date(subscription.startDate + "T00:00:00+09:00");
+      const subStartDate = new Date(subscription.startDate + "T00:00:00Z");
       await createSubscription({
         studentId: student.id,
         daysPerWeek: subscription.daysPerWeek,

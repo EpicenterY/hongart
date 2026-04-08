@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ status: "disabled_day", entries: [] });
   }
 
-  const targetDate = new Date(dateStr + "T00:00:00+09:00");
+  const targetDate = new Date(dateStr + "T00:00:00Z");
   const dayOfWeek = targetDate.getDay();
   const dayName = DAY_NAMES[dayOfWeek];
 
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
     } else {
       result = await createAttendance({
         studentId,
-        date: new Date(date + "T00:00:00+09:00"),
+        date: new Date(date + "T00:00:00Z"),
         status,
         checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE
           ? new Date()
