@@ -162,14 +162,28 @@ async function main() {
     roundsMap.get(sid)!.push([mi, cap]);
   }
 
+  // Build 2-hour student slot mapping
+  const DAY_NAMES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  const twoHourSlots: Record<string, [string, string]> = {};
+  for (const sid of Object.keys(weekendToWeekday)) {
+    const dayName = { 2: "TUE", 1: "MON", 3: "WED" }[weekendToWeekday[sid]]!;
+    const slots = (schedMap.get(sid) ?? [])
+      .filter(s => s.day === dayName)
+      .sort((a, b) => a.time.localeCompare(b.time));
+    twoHourSlots[sid] = [slots[0].time, slots[1].time];
+  }
+
   // Build attendance map with weekend conversion
-  const attMap = new Map<string, string[]>();
+  const attMap = new Map<string, { date: string; timeSlot: string }[]>();
   for (const [sid, date] of ATTENDANCE_RAW) {
     let d = date;
+    let timeSlot: string;
+
     if (sid in weekendToWeekday) {
       const dt = new Date(date + "T00:00:00");
       const dow = dt.getDay();
-      if (dow === 0 || dow === 6) {
+      const isWeekend = dow === 0 || dow === 6;
+      if (isWeekend) {
         const targetDow = weekendToWeekday[sid];
         const offset = dow === 0 ? targetDow : targetDow - 6;
         dt.setDate(dt.getDate() + offset);
@@ -177,10 +191,17 @@ async function main() {
         const m = String(dt.getMonth() + 1).padStart(2, "0");
         const day = String(dt.getDate()).padStart(2, "0");
         d = `${y}-${m}-${day}`;
+        timeSlot = twoHourSlots[sid][1]; // weekend = 2nd hour
+      } else {
+        timeSlot = twoHourSlots[sid][0]; // weekday = 1st hour
       }
+    } else {
+      const dayName = DAY_NAMES[new Date(d + "T00:00:00").getDay()];
+      timeSlot = (schedMap.get(sid) ?? []).find(s => s.day === dayName)?.time ?? "14:00";
     }
+
     if (!attMap.has(sid)) attMap.set(sid, []);
-    attMap.get(sid)!.push(d);
+    attMap.get(sid)!.push({ date: d, timeSlot });
   }
 
   // Track old ID → new UUID mapping
@@ -260,18 +281,19 @@ async function main() {
   // Collect all attendance records, then batch insert
   console.log("Creating attendance records...");
   type AttData = {
-    studentId: string; date: Date; status: "PRESENT";
+    studentId: string; date: Date; timeSlot: string; status: "PRESENT";
     checkInAt: Date; note: null;
   };
   const allAtt: AttData[] = [];
 
   for (const [id] of STUDENT_RAW) {
     const uuid = studentIdMap.get(id)!;
-    const dates = attMap.get(id) ?? [];
-    for (const d of dates) {
+    const records = attMap.get(id) ?? [];
+    for (const { date: d, timeSlot } of records) {
       allAtt.push({
         studentId: uuid,
         date: new Date(`${d}T00:00:00Z`),
+        timeSlot,
         status: "PRESENT",
         checkInAt: new Date(`${d}T15:05:00+09:00`),
         note: null,

@@ -103,6 +103,7 @@ model Attendance {
   id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   studentId String           @map("student_id") @db.Uuid
   date      DateTime         @db.Date
+  timeSlot  String           @map("time_slot")
   status    AttendanceStatus
   checkInAt DateTime?        @map("check_in_at")
   note      String?
@@ -111,7 +112,7 @@ model Attendance {
 
   student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
-  @@unique([studentId, date])
+  @@unique([studentId, date, timeSlot])
   @@index([date])
   @@index([studentId, date])
   @@map("attendance")

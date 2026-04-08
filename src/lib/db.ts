@@ -100,6 +100,7 @@ function mapAttendance(r: NonNullable<AttendanceRow>): AttendanceRecord {
     id: r.id,
     studentId: r.studentId,
     date: r.date,
+    timeSlot: r.timeSlot,
     status: r.status as AttendanceStatus,
     checkInAt: r.checkInAt,
     note: r.note,
@@ -444,6 +445,7 @@ export async function getAttendanceByDate(dateStr: string): Promise<(AttendanceR
 export async function createAttendance(data: {
   studentId: string;
   date: Date;
+  timeSlot: string;
   status: AttendanceStatus;
   checkInAt: Date | null;
   note: string | null;
@@ -452,6 +454,7 @@ export async function createAttendance(data: {
     data: {
       studentId: data.studentId,
       date: data.date,
+      timeSlot: data.timeSlot,
       status: data.status as PrismaAttendanceStatus,
       checkInAt: data.checkInAt,
       note: data.note,

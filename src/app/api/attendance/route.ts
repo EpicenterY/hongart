@@ -48,56 +48,65 @@ export async function GET(request: NextRequest) {
       .map(o => [o.studentId, o.newTime] as const)
   );
 
-  const scheduledStudents = [];
+  // Build (student, timeSlot) pairs for scheduled entries
+  type ScheduledPair = { student: typeof activeStudents[0]; timeSlot: string };
+  const scheduledPairs: ScheduledPair[] = [];
+  const scheduledPairKeys = new Set<string>();
+
   for (const student of activeStudents) {
     if (removedByOverride.has(student.id)) continue;
     if (addedByOverride.has(student.id)) {
-      scheduledStudents.push(student);
+      const time = addedByOverride.get(student.id)!;
+      scheduledPairs.push({ student, timeSlot: time });
+      scheduledPairKeys.add(`${student.id}_${time}`);
       continue;
     }
     const sub = await getSubscriptionByStudentId(student.id);
     if (!sub) continue;
-    const hasDay = sub.schedule.some(s => s.day === dayName);
-    if (!hasDay) continue;
     if (sub.startDate > targetDate) continue;
-    scheduledStudents.push(student);
+    const daySlots = sub.schedule.filter(s => s.day === dayName);
+    if (daySlots.length === 0) continue;
+    for (const slot of daySlots) {
+      scheduledPairs.push({ student, timeSlot: slot.time });
+      scheduledPairKeys.add(`${student.id}_${slot.time}`);
+    }
   }
 
   const existingRecords = await getAttendanceByDate(dateStr);
 
-  const scheduledIds = new Set(scheduledStudents.map(s => s.id));
+  // Extra entries: attendance records not in scheduled pairs
   const allStudentsArr = await getStudents({});
-  const extraStudents = existingRecords
-    .filter(r => !scheduledIds.has(r.studentId))
-    .map(r => allStudentsArr.find(s => s.id === r.studentId))
-    .filter((s): s is NonNullable<typeof s> => !!s);
-  const allStudents = [...scheduledStudents, ...extraStudents];
+  const extraPairs: ScheduledPair[] = [];
+  for (const r of existingRecords) {
+    const key = `${r.studentId}_${r.timeSlot}`;
+    if (!scheduledPairKeys.has(key)) {
+      const student = allStudentsArr.find(s => s.id === r.studentId);
+      if (student) {
+        extraPairs.push({ student, timeSlot: r.timeSlot });
+        scheduledPairKeys.add(key);
+      }
+    }
+  }
+  const allPairs = [...scheduledPairs, ...extraPairs];
+
+  // Cache balance info per student
+  const balanceCache = new Map<string, Awaited<ReturnType<typeof getBalanceInfo>>>();
 
   const result = await Promise.all(
-    allStudents.map(async (student) => {
-      const record = existingRecords.find((r) => r.studentId === student.id);
-      const sub = await getSubscriptionByStudentId(student.id);
-      const balanceInfo = await getBalanceInfo(student.id);
+    allPairs.map(async ({ student, timeSlot }) => {
+      const record = existingRecords.find(
+        (r) => r.studentId === student.id && r.timeSlot === timeSlot
+      );
 
-      const overrideTime = addedByOverride.get(student.id);
-      let schedTime: string | null = overrideTime || (sub ? getScheduleTime(sub.schedule, dayName) : null);
-
-      if (!schedTime && record && sub && sub.schedule.length > 0) {
-        const timeCounts: Record<string, number> = {};
-        for (const slot of sub.schedule) {
-          timeCounts[slot.time] = (timeCounts[slot.time] || 0) + 1;
-        }
-        schedTime = Object.entries(timeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+      if (!balanceCache.has(student.id)) {
+        balanceCache.set(student.id, await getBalanceInfo(student.id));
       }
-      if (!schedTime && record?.checkInAt) {
-        const kst = new Date(record.checkInAt.getTime() + 9 * 60 * 60 * 1000);
-        schedTime = `${kst.getUTCHours()}:00`;
-      }
+      const balanceInfo = balanceCache.get(student.id)!;
 
       return {
         studentId: student.id,
         studentName: student.name,
-        scheduleTime: schedTime,
+        scheduleTime: timeSlot,
         attendance: record
           ? { id: record.id, status: record.status, note: record.note }
           : null,
@@ -116,7 +125,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { studentId, date, status } = body;
+    const { studentId, date, status, timeSlot: bodyTimeSlot } = body;
 
     if (!studentId || !date || !status) {
       return NextResponse.json(
@@ -132,8 +141,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Resolve timeSlot: use body value, or infer from student schedule
+    let timeSlot: string = bodyTimeSlot;
+    if (!timeSlot) {
+      const targetDate = new Date(date + "T00:00:00Z");
+      const dayName = DAY_NAMES[targetDate.getDay()];
+      const sub = await getSubscriptionByStudentId(studentId);
+      timeSlot = sub ? (getScheduleTime(sub.schedule, dayName) ?? "14:00") : "14:00";
+    }
+
     const existingRecords = await getAttendanceByDate(date);
-    const existing = existingRecords.find((r) => r.studentId === studentId);
+    const existing = existingRecords.find(
+      (r) => r.studentId === studentId && r.timeSlot === timeSlot
+    );
 
     let result;
     let statusCode = 200;
@@ -149,6 +169,7 @@ export async function POST(request: NextRequest) {
       result = await createAttendance({
         studentId,
         date: new Date(date + "T00:00:00Z"),
+        timeSlot,
         status,
         checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE
           ? new Date()

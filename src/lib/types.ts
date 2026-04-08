@@ -79,6 +79,7 @@ export interface AttendanceRecord {
   id: string;
   studentId: string;
   date: Date;
+  timeSlot: string;
   status: AttendanceStatus;
   checkInAt: Date | null;
   note: string | null;

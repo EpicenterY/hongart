@@ -217,6 +217,7 @@ export default function SchedulePage() {
   const [popover, setPopover] = useState<{
     studentId: string;
     dateStr: string;
+    timeSlot: string;
     anchorRect: { top: number; left: number; width: number; height: number };
   } | null>(null);
 
@@ -325,7 +326,8 @@ export default function SchedulePage() {
         map[r.date] = {};
         for (const e of r.entries) {
           if (e.attendance) {
-            map[r.date][e.studentId] = {
+            const key = `${e.studentId}_${e.scheduleTime}`;
+            map[r.date][key] = {
               ...e.attendance,
               scheduleTime: e.scheduleTime ?? null,
               studentName: e.studentName,
@@ -395,7 +397,7 @@ export default function SchedulePage() {
 
   // ─── Attendance mutation (unified for popover) ─────
   const attendanceMutation = useMutation({
-    mutationFn: async (payload: { studentId: string; date: string; status: string }) => {
+    mutationFn: async (payload: { studentId: string; date: string; status: string; timeSlot: string }) => {
       const res = await fetch("/api/attendance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -404,7 +406,7 @@ export default function SchedulePage() {
       if (!res.ok) throw new Error("Failed");
       return res.json();
     },
-    onMutate: async ({ studentId, status, date }) => {
+    onMutate: async ({ studentId, status, date, timeSlot }) => {
       // Optimistic update for daily view
       if (view === "daily" && date === dailyDate) {
         await queryClient.cancelQueries({ queryKey: ["attendance", dailyDate] });
@@ -415,7 +417,7 @@ export default function SchedulePage() {
           return {
             ...old,
             entries: old.entries.map((entry) => {
-              if (entry.studentId !== studentId) return entry;
+              if (entry.studentId !== studentId || entry.scheduleTime !== timeSlot) return entry;
               const wasCounted = entry.attendance ? COUNTED.includes(entry.attendance.status) : false;
               const isCounted = COUNTED.includes(status);
               const delta = (isCounted ? 1 : 0) - (wasCounted ? 1 : 0);
@@ -785,13 +787,14 @@ export default function SchedulePage() {
   }, [dndConfirm, weekDatesMap, overrideMutation, resolveSourceOverride, dateToDayMap, schedule, queryClient]);
 
   // ─── Popover open (unified) ────────────────────────
-  const openPopover = useCallback((e: React.MouseEvent, studentId: string, dateStr: string) => {
+  const openPopover = useCallback((e: React.MouseEvent, studentId: string, dateStr: string, timeSlot: string) => {
     // Prevent popover from opening right after a drag operation or while DnD modal is showing
     if (justDraggedRef.current || dndConfirm) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setPopover({
       studentId,
       dateStr,
+      timeSlot,
       anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
     });
   }, [dndConfirm]);
@@ -799,8 +802,8 @@ export default function SchedulePage() {
   // Compute popover attendance status dynamically
   const popoverAttStatus = popover
     ? (view === "daily"
-      ? (dailyEntries.find(e => e.studentId === popover.studentId)?.attendance?.status ?? null)
-      : (weekAttendance?.[popover.dateStr]?.[popover.studentId]?.status ?? null))
+      ? (dailyEntries.find(e => e.studentId === popover.studentId && e.scheduleTime === popover.timeSlot)?.attendance?.status ?? null)
+      : (weekAttendance?.[popover.dateStr]?.[`${popover.studentId}_${popover.timeSlot}`]?.status ?? null))
     : null;
 
   // ─── Month navigation ──────────────────────────────
@@ -989,11 +992,11 @@ export default function SchedulePage() {
                         return (
                           <button
                             key={entry.studentId}
-                            onClick={(e) => openPopover(e, entry.studentId, dailyDate)}
+                            onClick={(e) => openPopover(e, entry.studentId, dailyDate, entry.scheduleTime || "14:00")}
                             className={cn(
                               "text-xs font-medium px-3 py-2.5 rounded-md border transition-all w-full text-left",
                               style ? style.bg : colorClass,
-                              popover?.studentId === entry.studentId && popover?.dateStr === dailyDate && "ring-2 ring-primary-400",
+                              popover?.studentId === entry.studentId && popover?.dateStr === dailyDate && popover?.timeSlot === (entry.scheduleTime || "14:00") && "ring-2 ring-primary-400",
                               highlightStudentId && highlightStudentId === entry.studentId && "ring-2 ring-primary-400",
                               highlightStudentId && highlightStudentId !== entry.studentId && "opacity-30",
                             )}
@@ -1120,7 +1123,7 @@ export default function SchedulePage() {
                                   o => o.studentId === s.studentId && o.newDate === dateStr && o.newTime === time
                                 );
                                 const isFromDifferentDate = overrideForChip && overrideForChip.originalDate !== dateStr;
-                                const att = isFromDifferentDate ? null : weekAttendance?.[dateStr]?.[s.studentId];
+                                const att = isFromDifferentDate ? null : weekAttendance?.[dateStr]?.[`${s.studentId}_${time}`];
                                 const attStyle = att ? ATTENDANCE_STYLES[att.status] : null;
                                 const chipId = `${s.studentId}-${day}-${time}`;
                                 return (
@@ -1132,7 +1135,7 @@ export default function SchedulePage() {
                                     colorClass={attStyle ? attStyle.bg : (studentColorMap.get(s.studentId) || STUDENT_COLORS[0])}
                                     day={day}
                                     time={time}
-                                    onClick={(e) => openPopover(e, s.studentId, dateStr)}
+                                    onClick={(e) => openPopover(e, s.studentId, dateStr, time)}
                                     suffix={attStyle ? <span className="text-[10px] opacity-75">{attStyle.label}</span> : undefined}
                                     className={cn(
                                       "w-full",
@@ -1202,12 +1205,12 @@ export default function SchedulePage() {
                               <span className="text-xs font-medium text-gray-400 w-8 pt-0.5 flex-shrink-0">{TIME_LABELS[time]}</span>
                               <div className="flex flex-wrap gap-1.5">
                                 {entries.map((s) => {
-                                  const att = weekAttendance?.[dateStr]?.[s.studentId];
+                                  const att = weekAttendance?.[dateStr]?.[`${s.studentId}_${time}`];
                                   const style = att ? ATTENDANCE_STYLES[att.status] : null;
                                   return (
                                     <button
-                                      key={s.studentId}
-                                      onClick={(e) => openPopover(e, s.studentId, dateStr)}
+                                      key={`${s.studentId}_${time}`}
+                                      onClick={(e) => openPopover(e, s.studentId, dateStr, time)}
                                       className={cn(
                                         "text-xs font-medium px-2.5 py-2 rounded-md border transition-all flex items-center gap-1",
                                         style ? style.bg : studentColorMap.get(s.studentId),
@@ -1381,7 +1384,7 @@ export default function SchedulePage() {
           currentAttendanceStatus={popoverAttStatus}
           attendanceButtons={ATTENDANCE_BUTTONS}
           onAttendance={(status) => {
-            attendanceMutation.mutate({ studentId: popover.studentId, date: popover.dateStr, status });
+            attendanceMutation.mutate({ studentId: popover.studentId, date: popover.dateStr, status, timeSlot: popover.timeSlot });
           }}
         />
       )}
