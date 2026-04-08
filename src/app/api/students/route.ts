@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  getStudents,
+  getStudentsWithBalance,
   createStudent,
   createSubscription,
-  getSubscriptionByStudentId,
-  getBalanceInfo,
 } from "@/lib/db";
 import { StudentStatus, type StudentFilter } from "@/lib/types";
 
@@ -19,28 +17,7 @@ export async function GET(request: NextRequest) {
     filter.status = status;
   }
 
-  const students = await getStudents(filter);
-
-  const studentsWithInfo = await Promise.all(
-    students.map(async (student) => {
-      const subscription = await getSubscriptionByStudentId(student.id);
-      const balanceInfo = await getBalanceInfo(student.id);
-
-      return {
-        ...student,
-        subscription: subscription
-          ? {
-              daysPerWeek: subscription.daysPerWeek,
-              schedule: subscription.schedule,
-              monthlyFee: subscription.monthlyFee,
-            }
-          : null,
-        remainingClasses: balanceInfo.paymentState === "OK"
-          ? balanceInfo.currentSessionRemaining : null,
-        paymentState: balanceInfo.paymentState,
-      };
-    })
-  );
+  const studentsWithInfo = await getStudentsWithBalance(filter);
 
   return NextResponse.json(studentsWithInfo);
 }

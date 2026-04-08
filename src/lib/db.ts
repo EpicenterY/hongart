@@ -143,6 +143,71 @@ function mapScheduleOverride(r: NonNullable<ScheduleOverrideRow>): ScheduleOverr
   };
 }
 
+// ─── Batch Query: Students with Balance ──────────────────
+
+export async function getStudentsWithBalance(filter?: StudentFilter) {
+  const where: Prisma.StudentWhereInput = {};
+  if (filter?.status) where.status = filter.status;
+  if (filter?.search) {
+    const q = filter.search;
+    where.OR = [
+      { name: { contains: q, mode: "insensitive" } },
+      { school: { contains: q, mode: "insensitive" } },
+      { phone: { contains: q } },
+    ];
+  }
+
+  const rows = await prisma.student.findMany({
+    where,
+    orderBy: { name: "asc" },
+    include: {
+      subscription: true,
+      paymentSessions: { orderBy: { createdAt: "asc" } },
+      attendances: { orderBy: { date: "asc" } },
+    },
+  });
+
+  return rows.map((row) => {
+    const student = mapStudent(row);
+    const sub = row.subscription ? mapSubscription(row.subscription) : null;
+    const sessions = row.paymentSessions.map(mapPaymentSession);
+    const records = row.attendances.map(mapAttendance);
+    const filling = computeFilling(sessions, records);
+
+    const hasPaymentHistory = sessions.length > 0;
+    let paymentState: PaymentState;
+    if (!sub) {
+      paymentState = "NO_SUBSCRIPTION";
+    } else if (!hasPaymentHistory) {
+      paymentState = "NEW";
+    } else if (filling.remaining <= 0) {
+      paymentState = "NEEDS_PAYMENT";
+    } else {
+      paymentState = "OK";
+    }
+
+    const currentSession = [...sessions]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .find((s) => !s.frozen) ?? sessions[sessions.length - 1] ?? null;
+
+    let currentSessionRemaining = 0;
+    if (currentSession) {
+      const fs = filling.filledSessions.find((f) => f.session.id === currentSession.id);
+      const used = fs?.filledCount ?? 0;
+      currentSessionRemaining = Math.max(0, currentSession.capacity - used);
+    }
+
+    return {
+      ...student,
+      subscription: sub
+        ? { daysPerWeek: sub.daysPerWeek, schedule: sub.schedule, monthlyFee: sub.monthlyFee }
+        : null,
+      remainingClasses: paymentState === "OK" ? currentSessionRemaining : null,
+      paymentState,
+    };
+  });
+}
+
 // ─── CRUD Functions: Students ────────────────────────────
 
 export async function getStudents(filter?: StudentFilter): Promise<Student[]> {
