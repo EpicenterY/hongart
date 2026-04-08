@@ -20,19 +20,12 @@ enum AttendanceStatus {
   PRESENT
   ABSENT
   LATE
-  MAKEUP
 }
 
 enum PaymentMethod {
   CASH
   CARD
   TRANSFER
-}
-
-enum PaymentStatus {
-  PAID
-  PENDING
-  OVERDUE
 }
 
 enum MemoCategory {
@@ -57,10 +50,12 @@ model Student {
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
-  subscriptions Subscription[]
-  attendances   Attendance[]
-  payments      Payment[]
-  memos         Memo[]
+  subscription      Subscription?
+  paymentSessions   PaymentSession[]
+  attendances       Attendance[]
+  memos             Memo[]
+  pendingPlanChange PendingPlanChange?
+  scheduleOverrides ScheduleOverride[]
 
   @@index([status])
   @@index([name])
@@ -68,22 +63,40 @@ model Student {
 }
 
 model Subscription {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  studentId    String   @map("student_id") @db.Uuid
-  daysPerWeek  Int      @map("days_per_week")
-  scheduleDays String[] @map("schedule_days") @db.VarChar(3)
-  startDate    DateTime @map("start_date") @db.Date
-  endDate      DateTime? @map("end_date") @db.Date
-  monthlyFee   Int      @map("monthly_fee")
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  studentId   String   @unique @map("student_id") @db.Uuid
+  daysPerWeek Int      @map("days_per_week")
+  schedule    Json     @default("[]")
+  startDate   DateTime @map("start_date") @db.Date
+  endDate     DateTime? @map("end_date") @db.Date
+  monthlyFee  Int      @map("monthly_fee")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([isActive])
+  @@map("subscriptions")
+}
+
+model PaymentSession {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  studentId   String        @map("student_id") @db.Uuid
+  capacity    Int
+  frozen      Boolean       @default(false)
+  amount      Int
+  method      PaymentMethod
+  daysPerWeek Int           @map("days_per_week")
+  monthlyFee  Int           @map("monthly_fee")
+  note        String?
+  createdAt   DateTime      @default(now()) @map("created_at")
 
   student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@index([studentId])
-  @@index([isActive])
-  @@map("subscriptions")
+  @@index([createdAt])
+  @@map("payment_sessions")
 }
 
 model Attendance {
@@ -104,26 +117,6 @@ model Attendance {
   @@map("attendance")
 }
 
-model Payment {
-  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  studentId     String        @map("student_id") @db.Uuid
-  amount        Int
-  method        PaymentMethod?
-  status        PaymentStatus @default(PENDING)
-  targetMonth   String        @map("target_month") @db.VarChar(7)
-  paidAt        DateTime?     @map("paid_at")
-  note          String?
-  createdAt     DateTime      @default(now()) @map("created_at")
-  updatedAt     DateTime      @updatedAt @map("updated_at")
-
-  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
-
-  @@index([studentId])
-  @@index([targetMonth])
-  @@index([status])
-  @@map("payments")
-}
-
 model Memo {
   id        String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   studentId String       @map("student_id") @db.Uuid
@@ -137,4 +130,70 @@ model Memo {
   @@index([studentId])
   @@index([createdAt])
   @@map("memos")
+}
+
+model PendingPlanChange {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  studentId           String   @unique @map("student_id") @db.Uuid
+  previousDaysPerWeek Int      @map("previous_days_per_week")
+  previousSchedule    Json     @map("previous_schedule")
+  previousMonthlyFee  Int      @map("previous_monthly_fee")
+  frozenSessionId     String?  @map("frozen_session_id") @db.Uuid
+  recommendedAmount   Int      @map("recommended_amount")
+  isCredit            Boolean  @default(false) @map("is_credit")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@map("pending_plan_changes")
+}
+
+model ScheduleOverride {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  studentId    String   @map("student_id") @db.Uuid
+  originalDate String   @map("original_date") @db.VarChar(10)
+  newDate      String   @map("new_date") @db.VarChar(10)
+  newTime      String   @map("new_time") @db.VarChar(5)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, originalDate])
+  @@index([originalDate])
+  @@index([newDate])
+  @@map("schedule_overrides")
+}
+
+model Plan {
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  daysPerWeek Int    @unique @map("days_per_week")
+  label       String @db.VarChar(20)
+  monthlyFee  Int    @map("monthly_fee")
+
+  @@map("plans")
+}
+
+model VacationPeriod {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String @db.VarChar(50)
+  startDate String @map("start_date") @db.VarChar(10)
+  endDate   String @map("end_date") @db.VarChar(10)
+
+  @@map("vacation_periods")
+}
+
+model PublicHoliday {
+  id   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  date String @unique @db.VarChar(10)
+  name String @db.VarChar(50)
+
+  @@map("public_holidays")
+}
+
+model AppSettings {
+  id          String @id @default("singleton")
+  enabledDays Json   @default("[\"MON\",\"TUE\",\"WED\",\"THU\",\"FRI\"]") @map("enabled_days")
+  pin         String @default("1234") @db.VarChar(20)
+
+  @@map("app_settings")
 }

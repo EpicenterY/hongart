@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getClassDaySettings, updateClassDaySettings } from "@/lib/mock-data";
+import { getClassDaySettings, updateClassDaySettings } from "@/lib/db";
 
 export async function GET() {
-  return NextResponse.json(getClassDaySettings());
+  return NextResponse.json(await getClassDaySettings());
 }
 
 export async function PUT(request: NextRequest) {
@@ -25,7 +25,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const updated = updateClassDaySettings(enabledDays);
+    const updated = await updateClassDaySettings(enabledDays);
     return NextResponse.json(updated);
   } catch {
     return NextResponse.json({ error: "잘못된 요청입니다." }, { status: 400 });

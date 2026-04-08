@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getSubscriptionByStudentId,
-  getBalance,
-  getBalanceInfo,
   getPlans,
-  getLedgerByStudentId,
-  PaymentStatus,
-} from "@/lib/mock-data";
+  getPaymentSessionsByStudentId,
+  getAttendanceByStudentId,
+} from "@/lib/db";
+import { computeFilling } from "@/lib/types";
 
 export async function GET(
   request: NextRequest,
@@ -23,7 +22,7 @@ export async function GET(
     );
   }
 
-  const subscription = getSubscriptionByStudentId(studentId);
+  const subscription = await getSubscriptionByStudentId(studentId);
   if (!subscription) {
     return NextResponse.json(
       { error: "활성 수강 정보가 없습니다." },
@@ -31,28 +30,8 @@ export async function GET(
     );
   }
 
-  const plans = getPlans();
-
-  // If there's a pending plan change, use the original plan (before the pending change)
-  const ledger = getLedgerByStudentId(studentId);
-  const pendingCredit = ledger.find(
-    (e) => e.type === "CREDIT" && e.paymentStatus === PaymentStatus.PENDING
-  );
-  let effectiveDaysPerWeek = subscription.daysPerWeek;
-  let effectiveMonthlyFee = subscription.monthlyFee;
-  if (pendingCredit) {
-    const precedingPlanChange = [...ledger]
-      .filter((e) => e.type === "PLAN_CHANGE" && e.seq < pendingCredit.seq)
-      .sort((a, b) => b.seq - a.seq)[0];
-    if (precedingPlanChange?.daysPerWeek && precedingPlanChange?.monthlyFee) {
-      effectiveDaysPerWeek = precedingPlanChange.daysPerWeek;
-      effectiveMonthlyFee = precedingPlanChange.monthlyFee;
-    }
-  }
-
-  const currentPlan = plans.find(
-    (p) => p.daysPerWeek === effectiveDaysPerWeek
-  );
+  const plans = await getPlans();
+  const currentPlan = plans.find((p) => p.daysPerWeek === subscription.daysPerWeek);
   const newPlan = plans.find((p) => p.daysPerWeek === newDaysPerWeek);
 
   if (!currentPlan || !newPlan) {
@@ -62,14 +41,10 @@ export async function GET(
     );
   }
 
-  const balanceInfo = getBalanceInfo(studentId);
+  const sessions = await getPaymentSessionsByStudentId(studentId);
+  const hasPaymentHistory = sessions.length > 0;
 
-  // No payment history: no proration needed
-  // Check original payment history (exclude pending credits from plan changes)
-  const paidCredits = ledger.filter(
-    (e) => e.type === "CREDIT" && e.paymentStatus === PaymentStatus.PAID
-  );
-  if (paidCredits.length === 0) {
+  if (!hasPaymentHistory) {
     return NextResponse.json({
       noPrior: true,
       currentPlan: {
@@ -85,35 +60,36 @@ export async function GET(
         totalSessions: newPlan.daysPerWeek * 4,
       },
       usedSessions: 0,
-      unitPrice: 0,
-      usedAmount: 0,
-      remainingBalance: 0,
-      proratedAmount: 0,
+      unusedCredit: 0,
+      recommendedAmount: newPlan.monthlyFee,
       isCredit: false,
     });
   }
 
-  let balance = getBalance(studentId);
+  const records = await getAttendanceByStudentId(studentId);
+  const filling = computeFilling(sessions, records);
 
-  // If there's a pending plan change, restore balance to pre-plan-change state
-  if (pendingCredit) {
-    const precedingPlanChange = [...ledger]
-      .filter((e) => e.type === "PLAN_CHANGE" && e.seq < pendingCredit.seq)
-      .sort((a, b) => b.seq - a.seq)[0];
-    if (precedingPlanChange) {
-      balance = balance - precedingPlanChange.sessionDelta;
-    }
+  const activeSession = [...sessions]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .find((s) => !s.frozen);
+
+  let usedSessions = 0;
+  let originalCapacity = 0;
+
+  if (activeSession) {
+    const fs = filling.filledSessions.find((f) => f.session.id === activeSession.id);
+    usedSessions = fs?.filledCount ?? 0;
+    originalCapacity = activeSession.daysPerWeek * 4;
   }
 
-  // Calculate proration for all cases (balance > 0, = 0, < 0)
-  const totalSessions = currentPlan.daysPerWeek * 4;
-  const unitPrice = Math.round(currentPlan.monthlyFee / totalSessions);
-  const remainingCredit = balance * unitPrice;
-  const rawDiff = newPlan.monthlyFee - remainingCredit;
-  const proratedAmount = Math.round(rawDiff / 1000) * 1000;
-  const isCredit = proratedAmount < 0;
-
-  const usedSessions = Math.max(0, totalSessions - balance);
+  const unusedCount = originalCapacity - usedSessions;
+  const sessionMonthlyFee = activeSession?.monthlyFee ?? currentPlan.monthlyFee;
+  const unusedCredit = originalCapacity > 0
+    ? Math.round(unusedCount * (sessionMonthlyFee / originalCapacity))
+    : 0;
+  const rawAmount = newPlan.monthlyFee - unusedCredit;
+  const isCredit = rawAmount < 0;
+  const recommendedAmount = Math.abs(rawAmount);
 
   return NextResponse.json({
     noPrior: false,
@@ -121,7 +97,7 @@ export async function GET(
       daysPerWeek: currentPlan.daysPerWeek,
       label: currentPlan.label,
       monthlyFee: currentPlan.monthlyFee,
-      totalSessions,
+      totalSessions: currentPlan.daysPerWeek * 4,
     },
     newPlan: {
       daysPerWeek: newPlan.daysPerWeek,
@@ -130,10 +106,9 @@ export async function GET(
       totalSessions: newPlan.daysPerWeek * 4,
     },
     usedSessions,
-    unitPrice,
-    usedAmount: usedSessions * unitPrice,
-    remainingBalance: remainingCredit,
-    proratedAmount: Math.abs(proratedAmount),
+    unusedCount,
+    unusedCredit,
+    recommendedAmount,
     isCredit,
   });
 }

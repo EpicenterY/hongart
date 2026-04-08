@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getMemosByStudentId, createMemo } from "@/lib/mock-data";
+import { getMemosByStudentId, createMemo } from "@/lib/db";
 
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const memos = getMemosByStudentId(id);
+  const memos = await getMemosByStudentId(id);
   return NextResponse.json(memos);
 }
 
@@ -27,7 +27,7 @@ export async function POST(
       );
     }
 
-    const memo = createMemo({
+    const memo = await createMemo({
       studentId: id,
       category,
       content,

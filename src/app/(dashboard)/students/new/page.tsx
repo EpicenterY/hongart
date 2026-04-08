@@ -44,6 +44,8 @@ export default function NewStudentPage() {
   const [selectedPlan, setSelectedPlan] = useState<number | null>(null);
   const [scheduleDays, setScheduleDays] = useState<string[]>([]);
   const [scheduleTime, setScheduleTime] = useState("15:00");
+  const [perDayTime, setPerDayTime] = useState(false);
+  const [dayTimes, setDayTimes] = useState<Record<string, string>>({});
   const [startDate, setStartDate] = useState(
     new Date().toISOString().split("T")[0]
   );
@@ -102,8 +104,10 @@ export default function NewStudentPage() {
           note: note || undefined,
           subscription: {
             daysPerWeek: currentPlan.daysPerWeek,
-            scheduleDays,
-            scheduleTime,
+            schedule: scheduleDays.map(day => ({
+              day,
+              time: perDayTime ? (dayTimes[day] || "15:00") : scheduleTime,
+            })),
             monthlyFee: currentPlan.monthlyFee,
             startDate,
           },
@@ -143,7 +147,7 @@ export default function NewStudentPage() {
     <div className="px-4 py-6 lg:px-8 max-w-2xl mx-auto">
       <button
         onClick={() => router.push("/students")}
-        className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 mb-4 transition-colors"
+        className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 mb-4 py-2 transition-colors"
       >
         <ChevronLeft className="w-4 h-4" />
         학생 목록
@@ -254,7 +258,7 @@ export default function NewStudentPage() {
                     type="button"
                     onClick={() => toggleDay(day.key)}
                     className={cn(
-                      "w-10 h-10 rounded-lg text-sm font-medium transition-colors",
+                      "w-11 h-11 rounded-lg text-sm font-medium transition-colors",
                       scheduleDays.includes(day.key)
                         ? "bg-primary-600 text-white"
                         : "bg-gray-100 text-gray-600 hover:bg-gray-200"
@@ -268,26 +272,70 @@ export default function NewStudentPage() {
 
             {/* Schedule Time */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                수업 시간
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {TIME_OPTIONS.map((time) => (
-                  <button
-                    key={time.value}
-                    type="button"
-                    onClick={() => setScheduleTime(time.value)}
-                    className={cn(
-                      "px-4 h-10 rounded-lg text-sm font-medium transition-colors",
-                      scheduleTime === time.value
-                        ? "bg-primary-600 text-white"
-                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                    )}
-                  >
-                    {time.label}
-                  </button>
-                ))}
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-sm font-medium text-gray-700">
+                  수업 시간
+                </label>
+                {scheduleDays.length > 1 && (
+                  <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={perDayTime}
+                      onChange={(e) => setPerDayTime(e.target.checked)}
+                      className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    />
+                    요일별 다른 시간
+                  </label>
+                )}
               </div>
+              {!perDayTime ? (
+                <div className="flex flex-wrap gap-2">
+                  {TIME_OPTIONS.map((time) => (
+                    <button
+                      key={time.value}
+                      type="button"
+                      onClick={() => setScheduleTime(time.value)}
+                      className={cn(
+                        "px-4 h-10 rounded-lg text-sm font-medium transition-colors",
+                        scheduleTime === time.value
+                          ? "bg-primary-600 text-white"
+                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      )}
+                    >
+                      {time.label}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {scheduleDays.map((day) => {
+                    const dayLabel = ALL_SCHEDULE_DAYS.find(d => d.key === day)?.label || day;
+                    const currentTime = dayTimes[day] || scheduleTime;
+                    return (
+                      <div key={day} className="flex items-center gap-3">
+                        <span className="text-sm font-medium text-gray-700 w-8">{dayLabel}</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {TIME_OPTIONS.map((time) => (
+                            <button
+                              key={time.value}
+                              type="button"
+                              onClick={() => setDayTimes(prev => ({ ...prev, [day]: time.value }))}
+                              className={cn(
+                                "px-3 h-10 rounded-md text-xs font-medium transition-colors",
+                                currentTime === time.value
+                                  ? "bg-primary-600 text-white"
+                                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                              )}
+                            >
+                              {time.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <Input
@@ -321,7 +369,7 @@ export default function NewStudentPage() {
           </p>
         )}
 
-        <div className="flex gap-3 justify-end">
+        <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
           <Button
             type="button"
             variant="secondary"

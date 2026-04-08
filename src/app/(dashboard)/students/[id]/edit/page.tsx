@@ -13,6 +13,8 @@ interface Plan {
   monthlyFee: number;
 }
 
+interface ScheduleSlot { day: string; time: string; }
+
 interface StudentDetail {
   id: string;
   name: string;
@@ -24,8 +26,7 @@ interface StudentDetail {
   note: string | null;
   subscription: {
     daysPerWeek: number;
-    scheduleDays: string[];
-    scheduleTime: string;
+    schedule: ScheduleSlot[];
     startDate: string;
     monthlyFee: number;
   } | null;
@@ -94,6 +95,8 @@ export default function EditStudentPage({
   );
   const [scheduleDays, setScheduleDays] = useState<string[]>([]);
   const [scheduleTime, setScheduleTime] = useState("15:00");
+  const [perDayTime, setPerDayTime] = useState(false);
+  const [dayTimes, setDayTimes] = useState<Record<string, string>>({});
   const [startDate, setStartDate] = useState("");
 
   const [nameError, setNameError] = useState("");
@@ -170,8 +173,20 @@ export default function EditStudentPage({
       if (student.subscription) {
         setSelectedPlan(student.subscription.daysPerWeek);
         setOriginalDaysPerWeek(student.subscription.daysPerWeek);
-        setScheduleDays(student.subscription.scheduleDays);
-        setScheduleTime(student.subscription.scheduleTime);
+        const days = student.subscription.schedule.map(s => s.day);
+        setScheduleDays(days);
+        // Check if all times are the same
+        const times = student.subscription.schedule.map(s => s.time);
+        const uniqueTimes = [...new Set(times)];
+        if (uniqueTimes.length > 1) {
+          setPerDayTime(true);
+          const dt: Record<string, string> = {};
+          student.subscription.schedule.forEach(s => { dt[s.day] = s.time; });
+          setDayTimes(dt);
+          setScheduleTime(uniqueTimes[0]);
+        } else {
+          setScheduleTime(uniqueTimes[0] || "15:00");
+        }
         setStartDate(student.subscription.startDate);
       }
       setInitialized(true);
@@ -210,10 +225,13 @@ export default function EditStudentPage({
 
       // Update subscription if plan is selected
       if (currentPlan) {
+        const schedule = scheduleDays.map(day => ({
+          day,
+          time: perDayTime ? (dayTimes[day] || "15:00") : scheduleTime,
+        }));
         const subBody: Record<string, unknown> = {
           daysPerWeek: currentPlan.daysPerWeek,
-          scheduleDays,
-          scheduleTime,
+          schedule,
           monthlyFee: currentPlan.monthlyFee,
         };
 
@@ -233,7 +251,10 @@ export default function EditStudentPage({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(subBody),
         });
-        if (!subRes.ok) throw new Error("수강 정보 수정에 실패했습니다.");
+        if (!subRes.ok) {
+          const errData = await subRes.json().catch(() => ({}));
+          throw new Error(errData.error || "수강 정보 수정에 실패했습니다.");
+        }
       }
 
       return true;
@@ -295,7 +316,7 @@ export default function EditStudentPage({
     <div className="px-4 py-6 lg:px-8 max-w-2xl mx-auto">
       <button
         onClick={() => router.push(`/students/${id}`)}
-        className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 mb-4 transition-colors"
+        className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 mb-4 py-2 transition-colors"
       >
         <ChevronLeft className="w-4 h-4" />
         학생 상세
@@ -507,7 +528,7 @@ export default function EditStudentPage({
                     type="button"
                     onClick={() => toggleDay(day.key)}
                     className={cn(
-                      "w-10 h-10 rounded-lg text-sm font-medium transition-colors",
+                      "w-11 h-11 rounded-lg text-sm font-medium transition-colors",
                       scheduleDays.includes(day.key)
                         ? "bg-primary-600 text-white"
                         : "bg-gray-100 text-gray-600 hover:bg-gray-200"
@@ -520,26 +541,70 @@ export default function EditStudentPage({
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                수업 시간
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {TIME_OPTIONS.map((time) => (
-                  <button
-                    key={time.value}
-                    type="button"
-                    onClick={() => setScheduleTime(time.value)}
-                    className={cn(
-                      "px-4 h-10 rounded-lg text-sm font-medium transition-colors",
-                      scheduleTime === time.value
-                        ? "bg-primary-600 text-white"
-                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                    )}
-                  >
-                    {time.label}
-                  </button>
-                ))}
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-sm font-medium text-gray-700">
+                  수업 시간
+                </label>
+                {scheduleDays.length > 1 && (
+                  <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={perDayTime}
+                      onChange={(e) => setPerDayTime(e.target.checked)}
+                      className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    />
+                    요일별 다른 시간
+                  </label>
+                )}
               </div>
+              {!perDayTime ? (
+                <div className="flex flex-wrap gap-2">
+                  {TIME_OPTIONS.map((time) => (
+                    <button
+                      key={time.value}
+                      type="button"
+                      onClick={() => setScheduleTime(time.value)}
+                      className={cn(
+                        "px-4 h-10 rounded-lg text-sm font-medium transition-colors",
+                        scheduleTime === time.value
+                          ? "bg-primary-600 text-white"
+                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      )}
+                    >
+                      {time.label}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {scheduleDays.map((day) => {
+                    const dayLabel = ALL_SCHEDULE_DAYS.find(d => d.key === day)?.label || day;
+                    const currentTime = dayTimes[day] || scheduleTime;
+                    return (
+                      <div key={day} className="flex items-center gap-3">
+                        <span className="text-sm font-medium text-gray-700 w-8">{dayLabel}</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {TIME_OPTIONS.map((time) => (
+                            <button
+                              key={time.value}
+                              type="button"
+                              onClick={() => setDayTimes(prev => ({ ...prev, [day]: time.value }))}
+                              className={cn(
+                                "px-3 h-10 rounded-md text-xs font-medium transition-colors",
+                                currentTime === time.value
+                                  ? "bg-primary-600 text-white"
+                                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                              )}
+                            >
+                              {time.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </Card>
@@ -566,7 +631,7 @@ export default function EditStudentPage({
           </p>
         )}
 
-        <div className="flex gap-3 justify-end">
+        <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
           <Button
             type="button"
             variant="secondary"

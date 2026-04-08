@@ -7,36 +7,32 @@ import { CreditCard, Calendar, AlertTriangle } from "lucide-react";
 import { Card, Badge, Tabs, EmptyState } from "@/components/ui";
 import { formatCurrency } from "@/lib/format";
 
-interface CreditEntry {
+interface PaymentSessionEntry {
   id: string;
   studentId: string;
   studentName: string;
   amount: number;
-  method: string | null;
-  status: "PAID" | "PENDING";
+  method: string;
+  capacity: number;
+  frozen: boolean;
+  daysPerWeek: number;
+  monthlyFee: number;
   date: string;
-  paidAt: string | null;
   note: string | null;
-  sessionDelta: number;
 }
 
 interface UnpaidStudent {
   studentId: string;
   studentName: string;
-  balance: number;
+  remaining: number;
   monthlyFee: number;
-  sessionDelta: number;
+  capacity: number;
 }
 
 interface PaymentsResponse {
-  credits: CreditEntry[];
+  credits: PaymentSessionEntry[];
   unpaidStudents: UnpaidStudent[];
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  PAID: "완료",
-  PENDING: "미결제",
-};
 
 const METHOD_LABEL: Record<string, string> = {
   CASH: "현금",
@@ -57,15 +53,12 @@ export default function PaymentsPage() {
     },
   });
 
-  const credits = data?.credits ?? [];
+  const sessions = data?.credits ?? [];
   const unpaidStudents = data?.unpaidStudents ?? [];
 
-  const pendingCredits = credits.filter((c) => c.status === "PENDING");
-  const paidCredits = credits.filter((c) => c.status === "PAID");
-
   const tabs = [
-    { key: "unpaid", label: "미결제", badge: unpaidStudents.length + pendingCredits.length },
-    { key: "paid", label: "결제 완료", count: paidCredits.length },
+    { key: "unpaid", label: "미결제", badge: unpaidStudents.length },
+    { key: "paid", label: "결제 완료", count: sessions.length },
   ];
 
   return (
@@ -89,7 +82,6 @@ export default function PaymentsPage() {
         </div>
       ) : activeTab === "unpaid" ? (
         <div className="space-y-3">
-          {/* Unpaid students (balance <= 0, need new payment) */}
           {unpaidStudents.map((student) => (
             <Card
               key={student.studentId}
@@ -99,19 +91,19 @@ export default function PaymentsPage() {
               <div className="flex items-center justify-between">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="font-semibold text-gray-900">
+                    <span className="font-semibold text-gray-900 truncate">
                       {student.studentName}
                     </span>
                     <Badge variant="overdue">결제 필요</Badge>
                   </div>
-                  <div className="flex items-center gap-3 text-sm text-gray-500">
+                  <div className="flex flex-wrap items-center gap-3 text-sm text-gray-500">
                     <span className="flex items-center gap-1">
                       <AlertTriangle className="w-3.5 h-3.5" />
-                      잔여 {student.balance}회
+                      잔여 {student.remaining}회
                     </span>
                     {student.monthlyFee > 0 && (
                       <span className="font-medium text-gray-900">
-                        {formatCurrency(student.monthlyFee)} · {student.sessionDelta}회
+                        {formatCurrency(student.monthlyFee)} · {student.capacity}회
                       </span>
                     )}
                   </div>
@@ -120,31 +112,7 @@ export default function PaymentsPage() {
             </Card>
           ))}
 
-          {/* PENDING credit entries (from plan changes) */}
-          {pendingCredits.map((credit) => (
-            <Card
-              key={credit.id}
-              className="cursor-pointer hover:border-gray-300 transition-colors"
-              onClick={() => router.push(`/students/${credit.studentId}?tab=payments`)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-semibold text-gray-900">{credit.studentName}</span>
-                    <Badge variant="pending">{STATUS_LABEL[credit.status]}</Badge>
-                  </div>
-                  <div className="flex items-center gap-3 text-sm text-gray-500">
-                    <span className="font-medium text-gray-900">
-                      {formatCurrency(credit.amount)}
-                    </span>
-                    {credit.note && <span className="text-xs">{credit.note}</span>}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          ))}
-
-          {unpaidStudents.length === 0 && pendingCredits.length === 0 && (
+          {unpaidStudents.length === 0 && (
             <EmptyState
               icon={CreditCard}
               title="미결제 내역이 없습니다"
@@ -154,38 +122,41 @@ export default function PaymentsPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {paidCredits.length === 0 ? (
+          {sessions.length === 0 ? (
             <EmptyState
               icon={CreditCard}
               title="결제 내역이 없습니다"
               description="완료된 결제 내역이 없습니다."
             />
           ) : (
-            paidCredits.map((credit) => (
+            sessions.map((session) => (
               <Card
-                key={credit.id}
+                key={session.id}
                 className="cursor-pointer hover:border-gray-300 transition-colors"
-                onClick={() => router.push(`/students/${credit.studentId}?tab=payments`)}
+                onClick={() => router.push(`/students/${session.studentId}?tab=payments`)}
               >
                 <div className="flex items-center justify-between">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-semibold text-gray-900">{credit.studentName}</span>
+                      <span className="font-semibold text-gray-900 truncate">{session.studentName}</span>
                       <Badge variant="paid">완료</Badge>
                     </div>
-                    <div className="flex items-center gap-3 text-sm text-gray-500">
+                    <div className="flex flex-wrap items-center gap-3 text-sm text-gray-500">
                       <span className="flex items-center gap-1">
                         <Calendar className="w-3.5 h-3.5" />
-                        {new Date(credit.date).toLocaleDateString("ko-KR")}
+                        {new Date(session.date).toLocaleDateString("ko-KR")}
                       </span>
                       <span className="font-medium text-gray-900">
-                        {formatCurrency(credit.amount)}
+                        {formatCurrency(session.amount)}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {session.capacity}회
                       </span>
                     </div>
-                    {credit.method && (
+                    {session.method && (
                       <p className="text-xs text-gray-400 mt-1">
-                        {METHOD_LABEL[credit.method] || credit.method}
-                        {credit.note && ` | ${credit.note}`}
+                        {METHOD_LABEL[session.method] || session.method}
+                        {session.note && ` | ${session.note}`}
                       </p>
                     )}
                   </div>

@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  updateLedgerEntry,
-  PaymentStatus,
-  PaymentMethod,
-} from "@/lib/mock-data";
+import { updatePaymentSession } from "@/lib/db";
+import { PaymentMethod } from "@/lib/types";
 
 export async function PUT(
   request: NextRequest,
@@ -12,29 +9,27 @@ export async function PUT(
   try {
     const { id } = await params;
     const body = await request.json();
-    const { status, method, amount, note } = body as {
-      status?: PaymentStatus;
+    const { method, amount, note } = body as {
       method?: PaymentMethod;
       amount?: number;
       note?: string;
     };
 
-    const updates: Record<string, unknown> = {};
-    if (status !== undefined) updates.paymentStatus = status;
+    const updates: Partial<{ method: PaymentMethod; amount: number; note: string | null }> = {};
     if (method !== undefined) updates.method = method;
     if (amount !== undefined) updates.amount = amount;
     if (note !== undefined) updates.note = note;
 
-    const entry = updateLedgerEntry(id, updates);
+    const session = await updatePaymentSession(id, updates);
 
-    if (!entry) {
+    if (!session) {
       return NextResponse.json(
         { error: "결제 정보를 찾을 수 없습니다" },
         { status: 404 }
       );
     }
 
-    return NextResponse.json(entry);
+    return NextResponse.json(session);
   } catch {
     return NextResponse.json(
       { error: "잘못된 요청입니다" },

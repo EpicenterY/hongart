@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils";
 
 type StudentStatus = "ACTIVE" | "PAUSED" | "WITHDRAWN";
 
+interface ScheduleSlot { day: string; time: string; }
+
 interface StudentListItem {
   id: string;
   name: string;
@@ -19,11 +21,11 @@ interface StudentListItem {
   status: StudentStatus;
   subscription: {
     daysPerWeek: number;
-    scheduleDays: string[];
+    schedule: ScheduleSlot[];
     monthlyFee: number;
   } | null;
   remainingClasses: number | null;
-  paymentState: "OK" | "NEEDS_PAYMENT" | "PENDING_CREDIT" | "NEW" | "NO_SUBSCRIPTION" | null;
+  paymentState: "OK" | "NEEDS_PAYMENT" | "NEW" | "NO_SUBSCRIPTION" | null;
 }
 
 const STATUS_TABS = [
@@ -81,7 +83,7 @@ export default function StudentsPage() {
       render: (row: Record<string, unknown>) => {
         const item = row as unknown as StudentListItem;
         if (!item.subscription) return <span className="text-gray-400">-</span>;
-        const days = item.subscription.scheduleDays.map((d) => DAY_LABELS[d] || d).join(", ");
+        const days = item.subscription.schedule.map((s) => DAY_LABELS[s.day] || s.day).join(", ");
         return <span>주 {item.subscription.daysPerWeek}회 ({days})</span>;
       },
     },
@@ -91,7 +93,6 @@ export default function StudentsPage() {
       render: (row: Record<string, unknown>) => {
         const item = row as unknown as StudentListItem;
         if (item.paymentState === "NEEDS_PAYMENT" || item.paymentState === "NEW") return <Badge variant="overdue">미결제</Badge>;
-        if (item.paymentState === "PENDING_CREDIT") return <Badge variant="overdue">미결제</Badge>;
         if (item.remainingClasses === null) return <span className="text-gray-400">-</span>;
         return <span>{item.remainingClasses}회</span>;
       },
@@ -138,7 +139,7 @@ export default function StudentsPage() {
               key={tab.key}
               onClick={() => setStatusFilter(tab.key)}
               className={cn(
-                "px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap transition-colors",
+                "px-3 py-2.5 text-sm font-medium rounded-lg whitespace-nowrap transition-colors",
                 statusFilter === tab.key
                   ? "bg-primary-600 text-white"
                   : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
@@ -176,7 +177,7 @@ export default function StudentsPage() {
               ))
             : students.map((student) => {
                 const statusBadge = statusBadgeMap[student.status];
-                const days = student.subscription?.scheduleDays.map((d) => DAY_LABELS[d] || d).join(", ");
+                const days = student.subscription?.schedule.map((s) => DAY_LABELS[s.day] || s.day).join(", ");
                 return (
                   <div
                     key={student.id}
@@ -194,7 +195,7 @@ export default function StudentsPage() {
                     )}
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-gray-500">
-                        {student.paymentState === "NEEDS_PAYMENT" || student.paymentState === "NEW" || student.paymentState === "PENDING_CREDIT"
+                        {student.paymentState === "NEEDS_PAYMENT" || student.paymentState === "NEW"
                           ? <Badge variant="overdue">미결제</Badge>
                           : `잔여 ${student.remainingClasses ?? "-"}회`}
                       </span>

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-let currentPin = "092200";
+import { getPin, updatePin } from "@/lib/db";
 
 export async function POST(request: NextRequest) {
   try {
@@ -10,7 +9,8 @@ export async function POST(request: NextRequest) {
       newPin: string;
     };
 
-    if (inputPin !== currentPin) {
+    const storedPin = await getPin();
+    if (inputPin !== storedPin) {
       return NextResponse.json(
         { success: false, error: "현재 PIN이 올바르지 않습니다" },
         { status: 401 }
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    currentPin = newPin;
+    await updatePin(newPin);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json(

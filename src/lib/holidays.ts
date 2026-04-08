@@ -1,4 +1,5 @@
-import { getPublicHolidays, setPublicHolidays, type PublicHoliday } from "./mock-data";
+import { getPublicHolidays, setPublicHolidays } from "./db";
+import type { PublicHoliday } from "./types";
 
 const API_BASE =
   "http://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/getRestDeInfo";
@@ -49,7 +50,7 @@ async function fetchFromAPI(year: number): Promise<PublicHoliday[] | null> {
 async function fetchAllYears(): Promise<PublicHoliday[]> {
   const currentYear = new Date().getFullYear();
   const years: number[] = [];
-  for (let y = currentYear; y <= MAX_YEAR; y++) {
+  for (let y = currentYear - 1; y <= MAX_YEAR; y++) {
     years.push(y);
   }
 
@@ -70,7 +71,7 @@ let initialized = false;
 export async function ensureHolidaysLoaded(): Promise<void> {
   if (initialized) return;
 
-  const existing = getPublicHolidays();
+  const existing = await getPublicHolidays();
   if (existing.length > 0) {
     initialized = true;
     return;
@@ -78,7 +79,7 @@ export async function ensureHolidaysLoaded(): Promise<void> {
 
   const data = await fetchAllYears();
   if (data.length > 0) {
-    setPublicHolidays(data);
+    await setPublicHolidays(data);
     lastUpdatedAt = new Date().toISOString();
   }
   initialized = true;
@@ -89,7 +90,7 @@ export async function ensureHolidaysLoaded(): Promise<void> {
  */
 export async function getHolidays(year?: number): Promise<PublicHoliday[]> {
   await ensureHolidaysLoaded();
-  const all = getPublicHolidays();
+  const all = await getPublicHolidays();
   if (year) return all.filter((h) => h.date.startsWith(String(year)));
   return all;
 }
@@ -109,7 +110,7 @@ export async function refreshHolidays(): Promise<PublicHoliday[] | null> {
   const data = await fetchAllYears();
   if (data.length === 0) return null;
 
-  setPublicHolidays(data);
+  await setPublicHolidays(data);
   lastUpdatedAt = new Date().toISOString();
   initialized = true;
 

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getVacationPeriods, createVacationPeriod } from "@/lib/mock-data";
+import { getVacationPeriods, createVacationPeriod } from "@/lib/db";
 
 export async function GET() {
-  return NextResponse.json(getVacationPeriods());
+  return NextResponse.json(await getVacationPeriods());
 }
 
 export async function POST(request: NextRequest) {
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const created = createVacationPeriod({ name, startDate, endDate });
+    const created = await createVacationPeriod({ name, startDate, endDate });
     return NextResponse.json(created, { status: 201 });
   } catch {
     return NextResponse.json({ error: "잘못된 요청입니다." }, { status: 400 });

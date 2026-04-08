@@ -1,19 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  getStudents,
   getSubscriptionByStudentId,
   getUnpaidStudents,
-  getAllCredits,
-  addCredit,
-  PaymentStatus,
-  PaymentMethod,
-} from "@/lib/mock-data";
+  getAllPaymentSessions,
+  createPaymentSession,
+  getPendingPlanChangeByStudentId,
+  deletePendingPlanChange,
+} from "@/lib/db";
+import { PaymentMethod } from "@/lib/types";
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const statusFilter = searchParams.get("status") as PaymentStatus | null;
+export async function GET() {
+  const sessions = await getAllPaymentSessions();
+  const unpaidStudents = await getUnpaidStudents();
+  const allStudents = await getStudents();
 
-  const credits = getAllCredits(statusFilter ?? undefined);
-  const unpaidStudents = getUnpaidStudents();
+  const credits = sessions.map((s) => ({
+    id: s.id,
+    studentId: s.studentId,
+    studentName: allStudents.find((st) => st.id === s.studentId)?.name ?? "",
+    amount: s.amount,
+    method: s.method,
+    capacity: s.capacity,
+    frozen: s.frozen,
+    daysPerWeek: s.daysPerWeek,
+    monthlyFee: s.monthlyFee,
+    date: s.createdAt.toISOString(),
+    note: s.note,
+  }));
 
   return NextResponse.json({ credits, unpaidStudents });
 }
@@ -28,21 +42,25 @@ export async function POST(request: NextRequest) {
       note?: string;
     };
 
-    const sub = getSubscriptionByStudentId(studentId);
+    const sub = await getSubscriptionByStudentId(studentId);
     const finalAmount = amount ?? sub?.monthlyFee ?? 0;
-    const sessionDelta = sub ? sub.daysPerWeek * 4 : 0;
+    const capacity = sub ? sub.daysPerWeek * 4 : 0;
 
-    const entry = addCredit({
+    const session = await createPaymentSession({
       studentId,
-      date: new Date(),
-      sessionDelta,
+      capacity,
       amount: finalAmount,
       method: method as PaymentMethod,
-      paymentStatus: PaymentStatus.PAID,
+      daysPerWeek: sub?.daysPerWeek ?? 0,
+      monthlyFee: sub?.monthlyFee ?? 0,
       note: note || null,
     });
 
-    return NextResponse.json(entry, { status: 201 });
+    // Auto-clear pending plan change after payment
+    const pending = await getPendingPlanChangeByStudentId(studentId);
+    if (pending) await deletePendingPlanChange(pending.id);
+
+    return NextResponse.json(session, { status: 201 });
   } catch {
     return NextResponse.json(
       { error: "잘못된 요청입니다" },

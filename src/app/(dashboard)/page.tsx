@@ -3,15 +3,20 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Clock, ChevronLeft, ChevronRight, User } from "lucide-react";
-import { Card, Badge, EmptyState, Tabs } from "@/components/ui";
+import { DndContext, DragOverlay, MouseSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from "@dnd-kit/core";
+import { Clock, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { Card, Badge, EmptyState, Tabs, Modal, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { DraggableChip } from "@/components/schedule/DraggableChip";
+import { DroppableCell } from "@/components/schedule/DroppableCell";
+import { SchedulePopover } from "@/components/schedule/SchedulePopover";
+
+interface ScheduleSlot { day: string; time: string; }
 
 interface ScheduleEntry {
   studentId: string;
   studentName: string;
-  scheduleTime: string;
-  scheduleDays: string[];
+  schedule: ScheduleSlot[];
   daysPerWeek: number;
   startDate: string;
 }
@@ -32,6 +37,16 @@ interface AttendanceInfo {
   id: string;
   status: string;
   note: string | null;
+  scheduleTime?: string | null;
+  studentName?: string;
+}
+
+interface ScheduleOverrideInfo {
+  id: string;
+  studentId: string;
+  originalDate: string;
+  newDate: string;
+  newTime: string;
 }
 
 interface AttendanceEntry {
@@ -108,28 +123,20 @@ function toDateStr(y: number, m: number, d: number): string {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
-// ─── Helper: date info for calendars ────────────────────
 function getCalendarDays(year: number, month: number) {
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const prevDays = new Date(year, month, 0).getDate();
-
   const cells: { date: number; month: number; year: number; isCurrentMonth: boolean }[] = [];
-
-  // Previous month padding
   for (let i = firstDay - 1; i >= 0; i--) {
     const d = prevDays - i;
     const pm = month === 0 ? 11 : month - 1;
     const py = month === 0 ? year - 1 : year;
     cells.push({ date: d, month: pm, year: py, isCurrentMonth: false });
   }
-
-  // Current month
   for (let d = 1; d <= daysInMonth; d++) {
     cells.push({ date: d, month, year, isCurrentMonth: true });
   }
-
-  // Next month padding to fill 6 rows (42 cells) or complete current row
   const remainder = cells.length % 7;
   const pad = remainder === 0 ? 0 : 7 - remainder;
   for (let d = 1; d <= pad; d++) {
@@ -137,15 +144,13 @@ function getCalendarDays(year: number, month: number) {
     const ny = month === 11 ? year + 1 : year;
     cells.push({ date: d, month: nm, year: ny, isCurrentMonth: false });
   }
-
   return cells;
 }
 
-// ─── Helper: get Monday of the week containing a date ───
 function getMonday(d: Date): Date {
   const date = new Date(d);
   const day = date.getDay();
-  const diff = day === 0 ? -6 : 1 - day; // Monday = 1
+  const diff = day === 0 ? -6 : 1 - day;
   date.setDate(date.getDate() + diff);
   date.setHours(0, 0, 0, 0);
   return date;
@@ -182,32 +187,41 @@ export default function SchedulePage() {
   const [dailyDate, setDailyDate] = useState(todayDateStr);
   const isDailyToday = dailyDate === todayDateStr;
 
+  // ─── Student highlight state ────────────────────
+  const [highlightStudentId, setHighlightStudentId] = useState<string | null>(null);
+  const [studentSearchQuery, setStudentSearchQuery] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchHighlightIdx, setSearchHighlightIdx] = useState(-1);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const searchListRef = useRef<HTMLDivElement>(null);
+
   const queryClient = useQueryClient();
-  const [activePopover, setActivePopover] = useState<{
+
+  // ─── DnD state ─────────────────────────────────────
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+  );
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeDragEntry, setActiveDragEntry] = useState<{ studentName: string; colorClass: string } | null>(null);
+
+  // ─── DnD confirmation state ────────────────────────
+  const [dndConfirm, setDndConfirm] = useState<{
     studentId: string;
-    dateStr: string;
-    rect: { top: number; left: number; right: number; bottom: number };
+    studentName: string;
+    from: { day: string; time: string };
+    to: { day: string; time: string };
   } | null>(null);
 
-  const [flashCard, setFlashCard] = useState<string | null>(null);
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const openPopover = useCallback((e: React.MouseEvent, studentId: string, dateStr: string) => {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setActivePopover({ studentId, dateStr, rect: { top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom } });
-  }, []);
-
-  const triggerFlash = useCallback((key: string) => {
-    setFlashCard(key);
-    if (flashTimer.current) clearTimeout(flashTimer.current);
-    flashTimer.current = setTimeout(() => setFlashCard(null), 600);
-  }, []);
-
-  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
+  // ─── Popover state (unified daily/weekly) ──────────
+  const [popover, setPopover] = useState<{
+    studentId: string;
+    dateStr: string;
+    anchorRect: { top: number; left: number; width: number; height: number };
+  } | null>(null);
 
   const isThisWeek = getMonday(today).getTime() === weekMonday.getTime();
 
-  // Compute dates for each weekday column (Mon~Sat)
   function getWeekDate(dayIdx: number): Date {
     const d = new Date(weekMonday);
     d.setDate(d.getDate() + dayIdx);
@@ -247,9 +261,7 @@ export default function SchedulePage() {
     },
   });
   const holidayMap = new Map<string, string>();
-  for (const h of holidayData?.holidays ?? []) {
-    holidayMap.set(h.date, h.name);
-  }
+  for (const h of holidayData?.holidays ?? []) holidayMap.set(h.date, h.name);
 
   const { data: vacations = [] } = useQuery<VacationPeriod[]>({
     queryKey: ["vacations"],
@@ -260,7 +272,6 @@ export default function SchedulePage() {
     },
   });
 
-  // Week dates map for attendance fetching
   const weekDatesMap = useMemo(() => {
     const map: Record<string, string> = {};
     const offsets: Record<string, number> = { MON: 0, TUE: 1, WED: 2, THU: 3, FRI: 4, SAT: 5 };
@@ -272,7 +283,31 @@ export default function SchedulePage() {
     return map;
   }, [weekMonday]);
 
-  // Fetch attendance for visible week
+  // ─── Schedule overrides for the current week ────────
+  const { data: weekOverrides = [] } = useQuery<ScheduleOverrideInfo[]>({
+    queryKey: ["weekOverrides", weekMonday.toISOString()],
+    queryFn: async () => {
+      const dates = Object.values(weekDatesMap);
+      const results = await Promise.all(
+        dates.map(async (date) => {
+          const res = await fetch(`/api/schedule/override?date=${date}`);
+          if (!res.ok) return [];
+          return res.json();
+        })
+      );
+      // Deduplicate by id
+      const seen = new Set<string>();
+      const all: ScheduleOverrideInfo[] = [];
+      for (const arr of results) {
+        for (const o of arr) {
+          if (!seen.has(o.id)) { seen.add(o.id); all.push(o); }
+        }
+      }
+      return all;
+    },
+    enabled: view === "weekly",
+  });
+
   const { data: weekAttendance } = useQuery<Record<string, Record<string, AttendanceInfo>>>({
     queryKey: ["weekAttendance", weekMonday.toISOString()],
     queryFn: async () => {
@@ -290,7 +325,11 @@ export default function SchedulePage() {
         map[r.date] = {};
         for (const e of r.entries) {
           if (e.attendance) {
-            map[r.date][e.studentId] = e.attendance;
+            map[r.date][e.studentId] = {
+              ...e.attendance,
+              scheduleTime: e.scheduleTime ?? null,
+              studentName: e.studentName,
+            };
           }
         }
       }
@@ -299,6 +338,62 @@ export default function SchedulePage() {
     enabled: view === "weekly",
   });
 
+  // ─── Schedule mutations ────────────────────────────
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+
+  const scheduleMutation = useMutation({
+    mutationFn: async ({ studentId, schedule: newSchedule }: { studentId: string; schedule: ScheduleSlot[] }) => {
+      const res = await fetch(`/api/students/${studentId}/subscription`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schedule: newSchedule }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["schedule"] });
+      queryClient.invalidateQueries({ queryKey: ["students"] });
+      queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
+      queryClient.invalidateQueries({ queryKey: ["weekOverrides"] });
+      setDndConfirm(null);
+      setScheduleError(null);
+    },
+    onError: (err: Error) => {
+      setScheduleError(err.message);
+    },
+  });
+
+  const overrideMutation = useMutation({
+    mutationFn: async (payload: { studentId: string; originalDate: string; newDate: string; newTime: string }) => {
+      const res = await fetch("/api/schedule/override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["schedule"] });
+      queryClient.invalidateQueries({ queryKey: ["attendance"] });
+      queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
+      queryClient.invalidateQueries({ queryKey: ["weekOverrides"] });
+      setDndConfirm(null);
+      setScheduleError(null);
+    },
+    onError: (err: Error) => {
+      setScheduleError(err.message);
+    },
+  });
+
+  // ─── Attendance mutation (unified for popover) ─────
   const attendanceMutation = useMutation({
     mutationFn: async (payload: { studentId: string; date: string; status: string }) => {
       const res = await fetch("/api/attendance", {
@@ -309,17 +404,50 @@ export default function SchedulePage() {
       if (!res.ok) throw new Error("Failed");
       return res.json();
     },
-    onSuccess: (_data, variables) => {
-      triggerFlash(`${variables.studentId}-${variables.date}`);
-      queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
+    onMutate: async ({ studentId, status, date }) => {
+      // Optimistic update for daily view
+      if (view === "daily" && date === dailyDate) {
+        await queryClient.cancelQueries({ queryKey: ["attendance", dailyDate] });
+        const previous = queryClient.getQueryData<DailyAttendanceResponse>(["attendance", dailyDate]);
+        queryClient.setQueryData<DailyAttendanceResponse>(["attendance", dailyDate], (old) => {
+          if (!old) return old;
+          const COUNTED = ["PRESENT", "LATE"];
+          return {
+            ...old,
+            entries: old.entries.map((entry) => {
+              if (entry.studentId !== studentId) return entry;
+              const wasCounted = entry.attendance ? COUNTED.includes(entry.attendance.status) : false;
+              const isCounted = COUNTED.includes(status);
+              const delta = (isCounted ? 1 : 0) - (wasCounted ? 1 : 0);
+              return {
+                ...entry,
+                attendance: { id: entry.attendance?.id || "temp", status, note: entry.attendance?.note || null },
+                usedSessions: entry.usedSessions !== null ? entry.usedSessions + delta : null,
+                remainingClasses: entry.remainingClasses !== null ? entry.remainingClasses - delta : null,
+              };
+            }),
+          };
+        });
+        return { previous };
+      }
+    },
+    onError: (_err, vars, context) => {
+      if (context?.previous) queryClient.setQueryData(["attendance", vars.date], context.previous);
+    },
+    onSuccess: () => {
+      setPopover(null);
+    },
+    onSettled: (_data, _err, variables) => {
       queryClient.invalidateQueries({ queryKey: ["attendance"] });
+      queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
       queryClient.invalidateQueries({ queryKey: ["students"] });
       queryClient.invalidateQueries({ queryKey: ["student", variables.studentId] });
-      setActivePopover(null);
+      queryClient.invalidateQueries({ queryKey: ["payments"] });
+      queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
     },
   });
 
-  // ─── Daily view: attendance query & mutation ──────────
+  // ─── Daily view query ──────────────────────────────
   const { data: dailyResponse, isLoading: dailyLoading } = useQuery<DailyAttendanceResponse>({
     queryKey: ["attendance", dailyDate],
     queryFn: async () => {
@@ -333,58 +461,6 @@ export default function SchedulePage() {
   const dailyEntries = dailyResponse?.entries ?? [];
   const dailyDateStatus = dailyResponse?.status ?? "normal";
 
-  const dailyMutation = useMutation({
-    mutationFn: async ({ studentId, status }: { studentId: string; status: DailyStatus }) => {
-      const res = await fetch("/api/attendance", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studentId, date: dailyDate, status }),
-      });
-      if (!res.ok) throw new Error("Failed to save");
-      return res.json();
-    },
-    onMutate: async ({ studentId, status }) => {
-      await queryClient.cancelQueries({ queryKey: ["attendance", dailyDate] });
-      const previous = queryClient.getQueryData<DailyAttendanceResponse>(["attendance", dailyDate]);
-      queryClient.setQueryData<DailyAttendanceResponse>(["attendance", dailyDate], (old) => {
-        if (!old) return old;
-        const COUNTED = ["PRESENT", "LATE"];
-        return {
-          ...old,
-          entries: old.entries.map((entry) => {
-            if (entry.studentId !== studentId) return entry;
-            const wasCounted = entry.attendance ? COUNTED.includes(entry.attendance.status) : false;
-            const isCounted = COUNTED.includes(status);
-            const delta = (isCounted ? 1 : 0) - (wasCounted ? 1 : 0);
-            return {
-              ...entry,
-              attendance: { id: entry.attendance?.id || "temp", status, note: entry.attendance?.note || null },
-              usedSessions: entry.usedSessions !== null ? entry.usedSessions + delta : null,
-              remainingClasses: entry.remainingClasses !== null ? entry.remainingClasses - delta : null,
-            };
-          }),
-        };
-      });
-      return { previous };
-    },
-    onError: (_err, _vars, context) => {
-      if (context?.previous) queryClient.setQueryData(["attendance", dailyDate], context.previous);
-    },
-    onSuccess: (_data, variables) => {
-      triggerFlash(`${variables.studentId}-${dailyDate}`);
-      setActivePopover(null);
-    },
-    onSettled: (_data, _err, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["attendance", dailyDate] });
-      queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
-      queryClient.invalidateQueries({ queryKey: ["students"] });
-      queryClient.invalidateQueries({ queryKey: ["student", variables.studentId] });
-      queryClient.invalidateQueries({ queryKey: ["payments"] });
-      queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
-    },
-  });
-
-  // Daily: group by time slot
   const dailyTimeMap = new Map<string, DailyAttendanceEntry[]>();
   for (const entry of dailyEntries) {
     const time = entry.scheduleTime || "00:00";
@@ -436,16 +512,62 @@ export default function SchedulePage() {
     }
   });
 
-  // ─── Get students scheduled for a specific date ──
+  // ─── Student search list ─────────────────────────
+  const uniqueStudents = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const entry of schedule) {
+      if (!seen.has(entry.studentId)) seen.set(entry.studentId, entry.studentName);
+    }
+    return Array.from(seen.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  }, [schedule]);
+
+  const filteredStudents = useMemo(() => {
+    if (!studentSearchQuery.trim()) return uniqueStudents;
+    const q = studentSearchQuery.trim().toLowerCase();
+    return uniqueStudents.filter(s => s.name.toLowerCase().includes(q));
+  }, [uniqueStudents, studentSearchQuery]);
+
+  // Scroll highlighted item into view
+  useEffect(() => {
+    if (searchHighlightIdx < 0 || !searchListRef.current) return;
+    const items = searchListRef.current.children;
+    if (items[searchHighlightIdx]) {
+      (items[searchHighlightIdx] as HTMLElement).scrollIntoView({ block: "nearest" });
+    }
+  }, [searchHighlightIdx]);
+
+  // Close search dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setSearchFocused(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // ESC to clear highlight
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && highlightStudentId) {
+        setHighlightStudentId(null);
+        setStudentSearchQuery("");
+        setSearchFocused(false);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [highlightStudentId]);
+
   function getStudentsForDay(dayName: string, dateStr?: string): ScheduleEntry[] {
     return schedule.filter((e) => {
-      if (!e.scheduleDays.includes(dayName)) return false;
+      if (!e.schedule.some(s => s.day === dayName)) return false;
       if (dateStr && e.startDate > dateStr) return false;
       return true;
     });
   }
 
-  // ─── Date status helper ─────────────────────────────
   function getDateInfo(dateStr: string, dayName: string) {
     const holiday = holidayMap.get(dateStr);
     if (holiday) return { type: "holiday" as const, label: holiday };
@@ -459,24 +581,51 @@ export default function SchedulePage() {
   const grid: Record<string, Record<string, ScheduleEntry[]>> = {};
   for (const time of TIME_SLOTS) {
     grid[time] = {};
-    for (const day of WEEKDAYS) {
-      grid[time][day] = [];
-    }
+    for (const day of WEEKDAYS) grid[time][day] = [];
   }
   for (const entry of schedule) {
-    for (const day of entry.scheduleDays) {
-      if (grid[entry.scheduleTime]?.[day]) {
-        grid[entry.scheduleTime][day].push(entry);
-      }
+    for (const slot of entry.schedule) {
+      if (grid[slot.time]?.[slot.day]) grid[slot.time][slot.day].push(entry);
     }
   }
 
-  /** Filter grid entries for a specific date (excludes students not yet started) */
   function getGridEntries(time: string, day: string, dateStr: string): ScheduleEntry[] {
-    return (grid[time]?.[day] ?? []).filter(e => e.startDate <= dateStr);
+    const base = (grid[time]?.[day] ?? []).filter(e => e.startDate <= dateStr);
+
+    // Remove students whose originalDate matches this cell (they moved away)
+    const removed = new Set(
+      weekOverrides
+        .filter(o => o.originalDate === dateStr)
+        .map(o => o.studentId)
+    );
+    const filtered = base.filter(e => !removed.has(e.studentId));
+
+    // Add students whose newDate+newTime matches this cell (they moved here)
+    const added = weekOverrides.filter(o => o.newDate === dateStr && o.newTime === time);
+    for (const o of added) {
+      if (filtered.some(e => e.studentId === o.studentId)) continue;
+      const entry = schedule.find(e => e.studentId === o.studentId);
+      if (entry && entry.startDate <= dateStr) filtered.push(entry);
+    }
+
+    // Add attendance-only entries (students with attendance but no longer scheduled)
+    if (weekAttendance?.[dateStr]) {
+      for (const [studentId, att] of Object.entries(weekAttendance[dateStr])) {
+        if (filtered.some(e => e.studentId === studentId)) continue;
+        if (att.scheduleTime !== time) continue;
+        filtered.push({
+          studentId,
+          studentName: att.studentName ?? studentId,
+          schedule: [],
+          daysPerWeek: 0,
+          startDate: "1970-01-01",
+        });
+      }
+    }
+
+    return filtered;
   }
 
-  /** Count unique students for a day at a specific date */
   function getDayCount(day: string, dateStr: string): number {
     const set = new Set<string>();
     for (const time of TIME_SLOTS) {
@@ -484,6 +633,175 @@ export default function SchedulePage() {
     }
     return set.size;
   }
+
+  // ─── DnD handlers ──────────────────────────────────
+  const justDraggedRef = useRef(false);
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const { active } = event;
+    setActiveId(active.id as string);
+    const data = active.data.current as { studentId: string; day: string; time: string } | undefined;
+    if (data) {
+      const entry = schedule.find(e => e.studentId === data.studentId);
+      if (entry) {
+        setActiveDragEntry({
+          studentName: entry.studentName,
+          colorClass: studentColorMap.get(entry.studentId) || STUDENT_COLORS[0],
+        });
+      }
+    }
+    setPopover(null);
+  }, [schedule, studentColorMap]);
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    setActiveId(null);
+    setActiveDragEntry(null);
+    // Prevent click events right after drag from opening popover/triggering attendance
+    justDraggedRef.current = true;
+    setTimeout(() => { justDraggedRef.current = false; }, 200);
+
+    const { active, over } = event;
+    if (!over) return;
+
+    const from = active.data.current as { studentId: string; day: string; time: string } | undefined;
+    const to = over.data.current as { day: string; time: string } | undefined;
+    if (!from || !to) return;
+    if (from.day === to.day && from.time === to.time) return;
+
+    const entry = schedule.find(e => e.studentId === from.studentId);
+    if (!entry) return;
+
+    // Block: student already occupies the target via subscription (not vacated by override)
+    const targetDate = weekDatesMap[to.day];
+    const alreadyInSubscription = entry.schedule.some(s => {
+      if (s.day !== to.day || s.time !== to.time) return false;
+      if (s.day === from.day && s.time === from.time) return false;
+      // Allow if this slot is vacated by an override
+      const slotDate = weekDatesMap[s.day];
+      const isVacated = weekOverrides.some(
+        o => o.studentId === from.studentId && o.originalDate === slotDate
+      );
+      return !isVacated;
+    });
+    // Block: student already occupies the target via an override
+    const alreadyFromOverride = weekOverrides.some(
+      o => o.studentId === from.studentId && o.newDate === targetDate && o.newTime === to.time
+    );
+    if (alreadyInSubscription || alreadyFromOverride) return;
+
+    // Show confirmation dialog instead of immediate mutation
+    setDndConfirm({
+      studentId: from.studentId,
+      studentName: entry.studentName,
+      from: { day: from.day, time: from.time },
+      to: { day: to.day, time: to.time },
+    });
+  }, [schedule, weekOverrides, weekDatesMap]);
+
+  // ─── DnD confirm handlers ─────────────────────────
+  // Reverse map: dateStr → day name (e.g. "2026-04-09" → "THU")
+  const dateToDayMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const [day, date] of Object.entries(weekDatesMap)) m[date] = day;
+    return m;
+  }, [weekDatesMap]);
+
+  // Find if the drag source was an override-positioned chip
+  const resolveSourceOverride = useCallback((studentId: string, fromDay: string, fromTime: string) => {
+    const fromDate = weekDatesMap[fromDay];
+    return weekOverrides.find(
+      o => o.studentId === studentId && o.newDate === fromDate && o.newTime === fromTime
+    ) ?? null;
+  }, [weekOverrides, weekDatesMap]);
+
+  const handleDndRecurring = useCallback(() => {
+    if (!dndConfirm) return;
+    const entry = schedule.find(e => e.studentId === dndConfirm.studentId);
+    if (!entry) return;
+
+    const sourceOverride = resolveSourceOverride(
+      dndConfirm.studentId, dndConfirm.from.day, dndConfirm.from.time
+    );
+
+    // If source is from an override, resolve the actual subscription slot
+    const actualFromDay = sourceOverride
+      ? dateToDayMap[sourceOverride.originalDate] ?? dndConfirm.from.day
+      : dndConfirm.from.day;
+    const actualFromTime = sourceOverride
+      ? (entry.schedule.find(s => s.day === actualFromDay)?.time ?? dndConfirm.from.time)
+      : dndConfirm.from.time;
+
+    const newSchedule = entry.schedule.map(s =>
+      s.day === actualFromDay && s.time === actualFromTime
+        ? { day: dndConfirm.to.day, time: dndConfirm.to.time }
+        : s
+    );
+
+    // If there was a source override, delete it before applying recurring change
+    if (sourceOverride) {
+      fetch(`/api/schedule/override?id=${sourceOverride.id}`, { method: "DELETE" })
+        .then(() => scheduleMutation.mutate({ studentId: dndConfirm.studentId, schedule: newSchedule }));
+    } else {
+      scheduleMutation.mutate({ studentId: dndConfirm.studentId, schedule: newSchedule });
+    }
+  }, [dndConfirm, schedule, scheduleMutation, resolveSourceOverride, dateToDayMap]);
+
+  const handleDndOnce = useCallback(() => {
+    if (!dndConfirm) return;
+
+    const entry = schedule.find(e => e.studentId === dndConfirm.studentId);
+    const sourceOverride = resolveSourceOverride(
+      dndConfirm.studentId, dndConfirm.from.day, dndConfirm.from.time
+    );
+
+    // If source is from an override, use the original override's originalDate
+    // so the upsert correctly replaces the existing override
+    const actualOriginalDate = sourceOverride
+      ? sourceOverride.originalDate
+      : weekDatesMap[dndConfirm.from.day];
+
+    // If moving back to the original subscription slot, just delete the override
+    if (sourceOverride && entry) {
+      const originalDay = dateToDayMap[sourceOverride.originalDate];
+      const originalSlot = entry.schedule.find(s => s.day === originalDay);
+      if (originalSlot && dndConfirm.to.day === originalDay && dndConfirm.to.time === originalSlot.time) {
+        fetch(`/api/schedule/override?id=${sourceOverride.id}`, { method: "DELETE" })
+          .then(() => {
+            queryClient.invalidateQueries({ queryKey: ["weekOverrides"] });
+            queryClient.invalidateQueries({ queryKey: ["schedule"] });
+            queryClient.invalidateQueries({ queryKey: ["attendance"] });
+            setDndConfirm(null);
+          });
+        return;
+      }
+    }
+
+    overrideMutation.mutate({
+      studentId: dndConfirm.studentId,
+      originalDate: actualOriginalDate,
+      newDate: weekDatesMap[dndConfirm.to.day],
+      newTime: dndConfirm.to.time,
+    });
+  }, [dndConfirm, weekDatesMap, overrideMutation, resolveSourceOverride, dateToDayMap, schedule, queryClient]);
+
+  // ─── Popover open (unified) ────────────────────────
+  const openPopover = useCallback((e: React.MouseEvent, studentId: string, dateStr: string) => {
+    // Prevent popover from opening right after a drag operation or while DnD modal is showing
+    if (justDraggedRef.current || dndConfirm) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setPopover({
+      studentId,
+      dateStr,
+      anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+    });
+  }, [dndConfirm]);
+
+  // Compute popover attendance status dynamically
+  const popoverAttStatus = popover
+    ? (view === "daily"
+      ? (dailyEntries.find(e => e.studentId === popover.studentId)?.attendance?.status ?? null)
+      : (weekAttendance?.[popover.dateStr]?.[popover.studentId]?.status ?? null))
+    : null;
 
   // ─── Month navigation ──────────────────────────────
   function prevMonth() {
@@ -506,10 +824,96 @@ export default function SchedulePage() {
         <Tabs tabs={VIEW_TABS} activeTab={view} onTabChange={setView} />
       </div>
 
+      {/* ─── Student Search ─────────────────── */}
+      {(view === "daily" || view === "weekly") && schedule.length > 0 && (
+        <div ref={searchRef} className="relative mb-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="학생 검색..."
+              value={highlightStudentId ? (uniqueStudents.find(s => s.id === highlightStudentId)?.name ?? "") : studentSearchQuery}
+              onChange={(e) => {
+                setStudentSearchQuery(e.target.value);
+                setHighlightStudentId(null);
+                setSearchFocused(true);
+                setSearchHighlightIdx(-1);
+              }}
+              onFocus={() => setSearchFocused(true)}
+              onKeyDown={(e) => {
+                if (!searchFocused || highlightStudentId) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSearchHighlightIdx((prev) => Math.min(prev + 1, filteredStudents.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSearchHighlightIdx((prev) => Math.max(prev - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  const idx = searchHighlightIdx >= 0 ? searchHighlightIdx : 0;
+                  const target = filteredStudents[idx];
+                  if (target) {
+                    setHighlightStudentId(target.id);
+                    setStudentSearchQuery("");
+                    setSearchFocused(false);
+                    setSearchHighlightIdx(-1);
+                  }
+                } else if (e.key === "Escape") {
+                  setSearchFocused(false);
+                  setSearchHighlightIdx(-1);
+                }
+              }}
+              className={cn(
+                "w-full pl-9 pr-9 py-2 text-sm border rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-primary-400 focus:border-primary-400",
+                highlightStudentId ? "border-primary-400 bg-primary-50" : "border-gray-200",
+              )}
+            />
+            {(highlightStudentId || studentSearchQuery) && (
+              <button
+                onClick={() => {
+                  setHighlightStudentId(null);
+                  setStudentSearchQuery("");
+                  setSearchFocused(false);
+                }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full hover:bg-gray-200 transition-colors"
+              >
+                <X className="w-4 h-4 text-gray-500" />
+              </button>
+            )}
+          </div>
+          {searchFocused && !highlightStudentId && (
+            <div ref={searchListRef} className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+              {filteredStudents.length === 0 ? (
+                <div className="px-4 py-3 text-sm text-gray-400">일치하는 학생이 없습니다</div>
+              ) : (
+                filteredStudents.map((s, idx) => (
+                  <button
+                    key={s.id}
+                    onClick={() => {
+                      setHighlightStudentId(s.id);
+                      setStudentSearchQuery("");
+                      setSearchFocused(false);
+                      setSearchHighlightIdx(-1);
+                    }}
+                    onMouseEnter={() => setSearchHighlightIdx(idx)}
+                    className={cn(
+                      "w-full px-4 py-3 text-sm text-left transition-colors flex items-center gap-2",
+                      idx === searchHighlightIdx ? "bg-primary-50" : "hover:bg-primary-50",
+                    )}
+                  >
+                    <span className={cn("w-2.5 h-2.5 rounded-full border", studentColorMap.get(s.id) || STUDENT_COLORS[0])} />
+                    <span>{s.name}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ─── DAILY VIEW ──────────────────────── */}
       {view === "daily" && (
         <div className="space-y-4">
-          {/* Date Navigator */}
           <div className="flex items-center justify-center gap-3 mb-4">
             <button onClick={() => setDailyDate(addDaysDaily(dailyDate, -1))} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
               <ChevronLeft className="w-5 h-5 text-gray-600" />
@@ -522,17 +926,22 @@ export default function SchedulePage() {
             </button>
             <div className="relative">
               <input type="date" value={dailyDate} onChange={(e) => e.target.value && setDailyDate(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer w-full" />
-              <span className="text-sm font-semibold text-gray-900 pointer-events-none">{formatDailyDate(dailyDate)}</span>
+              <span className="text-sm font-semibold text-gray-900 pointer-events-none truncate">{formatDailyDate(dailyDate)}</span>
             </div>
             <button onClick={() => setDailyDate(addDaysDaily(dailyDate, 1))} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
               <ChevronRight className="w-5 h-5 text-gray-600" />
             </button>
           </div>
 
-          {dailyLoading ? (
-            <div className="animate-pulse space-y-4">
-              <div className="h-64 bg-gray-200 rounded-xl" />
+          {dailyDateStatus === "normal" && dailyTotalCount > 0 && (
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <span className="font-medium text-gray-700">{dailyPresentCount}/{dailyTotalCount}</span>
+              <span>출석</span>
             </div>
+          )}
+
+          {dailyLoading ? (
+            <div className="animate-pulse space-y-4"><div className="h-64 bg-gray-200 rounded-xl" /></div>
           ) : dailyDateStatus === "holiday" ? (
             <Card>
               <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 mb-4">
@@ -548,13 +957,9 @@ export default function SchedulePage() {
               <EmptyState icon={Clock} title="방학 기간입니다" description={`${formatDailyDate(dailyDate)}은(는) ${dailyResponse?.vacation} 기간으로 수업이 없습니다.`} />
             </Card>
           ) : dailyDateStatus === "disabled_day" ? (
-            <Card>
-              <EmptyState icon={Clock} title="수업이 없는 요일입니다" description={`${formatDailyDate(dailyDate)}은(는) 수업이 없는 요일입니다.`} />
-            </Card>
+            <Card><EmptyState icon={Clock} title="수업이 없는 요일입니다" description={`${formatDailyDate(dailyDate)}은(는) 수업이 없는 요일입니다.`} /></Card>
           ) : dailyEntries.length === 0 ? (
-            <Card>
-              <EmptyState icon={Clock} title="수업이 없습니다" description={`${formatDailyDate(dailyDate)}에는 예정된 수업이 없습니다.`} />
-            </Card>
+            <Card><EmptyState icon={Clock} title="수업이 없습니다" description={`${formatDailyDate(dailyDate)}에는 예정된 수업이 없습니다.`} /></Card>
           ) : (
             <Card padding={false}>
               {dailyTimeGroups.map(({ time, label, students }, groupIdx) => {
@@ -575,26 +980,35 @@ export default function SchedulePage() {
                     )}
                   </div>
                   {students.length > 0 && (
-                    <div className="px-4 py-2.5 flex flex-wrap gap-1.5">
+                    <div className="px-3 py-2 flex flex-col gap-1">
                       {students.map((entry) => {
                         const att = entry.attendance;
                         const style = att ? ATTENDANCE_STYLES[att.status] : null;
                         const colorClass = dailyColorMap.get(entry.studentId) || "";
-                        const isActive = activePopover?.studentId === entry.studentId && activePopover?.dateStr === dailyDate;
-                        const isFlashing = flashCard === `${entry.studentId}-${dailyDate}`;
+                        const remaining = entry.remainingClasses;
                         return (
                           <button
                             key={entry.studentId}
                             onClick={(e) => openPopover(e, entry.studentId, dailyDate)}
                             className={cn(
-                              "text-xs font-medium px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1",
+                              "text-xs font-medium px-3 py-2.5 rounded-md border transition-all w-full text-left",
                               style ? style.bg : colorClass,
-                              isActive && "ring-2 ring-primary-400",
-                              isFlashing && "animate-att-flash",
+                              popover?.studentId === entry.studentId && popover?.dateStr === dailyDate && "ring-2 ring-primary-400",
+                              highlightStudentId && highlightStudentId === entry.studentId && "ring-2 ring-primary-400",
+                              highlightStudentId && highlightStudentId !== entry.studentId && "opacity-30",
                             )}
                           >
-                            <span>{entry.studentName}</span>
-                            {style && <span className="text-[10px] opacity-75">{style.label}</span>}
+                            <span className="flex items-center justify-between gap-1 w-full">
+                              <span className="flex items-center gap-1.5">
+                                <span>{entry.studentName}</span>
+                                {remaining != null && (
+                                  <span className={cn("text-[10px] opacity-60", remaining <= 2 && "text-red-600 opacity-100 font-semibold")}>
+                                    잔여 {remaining}회
+                                  </span>
+                                )}
+                              </span>
+                              {style && <span className="text-[10px] opacity-75">{style.label}</span>}
+                            </span>
                           </button>
                         );
                       })}
@@ -610,26 +1024,17 @@ export default function SchedulePage() {
 
       {isLoading ? (
         view !== "daily" && (
-          <div className="animate-pulse space-y-4">
-            <div className="h-64 bg-gray-200 rounded-xl" />
-          </div>
+          <div className="animate-pulse space-y-4"><div className="h-64 bg-gray-200 rounded-xl" /></div>
         )
       ) : schedule.length === 0 ? (
         view !== "daily" && (
-          <EmptyState
-            icon={Clock}
-            title="등록된 시간표가 없습니다"
-            description="활성 학생의 수강권이 없습니다."
-          />
+          <EmptyState icon={Clock} title="등록된 시간표가 없습니다" description="활성 학생의 수강권이 없습니다." />
         )
       ) : (
         <>
           {/* ─── WEEKLY VIEW ─────────────────────── */}
           {view === "weekly" && (() => {
-              // Map WEEKDAYS to index offsets from Monday
               const dayOffsetMap: Record<string, number> = { MON: 0, TUE: 1, WED: 2, THU: 3, FRI: 4, SAT: 5 };
-
-              // Compute per-day date info and holiday/vacation status
               const weekDayInfos = WEEKDAYS.map((day) => {
                 const offset = dayOffsetMap[day] ?? 0;
                 const date = getWeekDate(offset);
@@ -640,26 +1045,23 @@ export default function SchedulePage() {
 
               return (
             <>
-              {/* Week navigation */}
               <div className="flex items-center justify-center gap-3 mb-4">
                 <button onClick={() => setWeekMonday((m) => addWeeks(m, -1))} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
                   <ChevronLeft className="w-5 h-5 text-gray-600" />
                 </button>
                 <button
                   onClick={() => setWeekMonday(getMonday(today))}
-                  className={cn(
-                    "text-sm font-medium px-3 py-1 rounded-full transition-colors",
-                    isThisWeek ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100",
-                  )}
+                  className={cn("text-sm font-medium px-3 py-1 rounded-full transition-colors", isThisWeek ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100")}
                 >이번 주</button>
-                <span className="text-sm font-semibold text-gray-900">{formatWeekRange(weekMonday)}</span>
+                <span className="text-sm font-semibold text-gray-900 truncate min-w-0">{formatWeekRange(weekMonday)}</span>
                 <button onClick={() => setWeekMonday((m) => addWeeks(m, 1))} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
                   <ChevronRight className="w-5 h-5 text-gray-600" />
                 </button>
               </div>
 
-              {/* Desktop Grid */}
+              {/* Desktop Grid with DnD */}
               <Card padding={false} className="hidden sm:block overflow-x-auto">
+                <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
                 <table className="w-full min-w-[600px] table-fixed">
                   <thead>
                     <tr className="border-b border-gray-200">
@@ -680,22 +1082,13 @@ export default function SchedulePage() {
                             >
                               <div className="flex items-center justify-center gap-1">
                                 <span>{DAY_LABELS[day]}</span>
-                                <span className={cn(
-                                  "text-xs font-medium w-6 h-6 flex items-center justify-center rounded-full",
-                                  isToday && "bg-primary-600 text-white",
-                                )}>
+                                <span className={cn("text-xs font-medium w-6 h-6 flex items-center justify-center rounded-full", isToday && "bg-primary-600 text-white")}>
                                   {date.getDate()}
                                 </span>
                               </div>
-                              {info.type === "holiday" && (
-                                <div className="text-[10px] font-normal text-red-500 mt-0.5">{info.label}</div>
-                              )}
-                              {info.type === "vacation" && (
-                                <div className="text-[10px] font-normal text-blue-500 mt-0.5">{info.label}</div>
-                              )}
-                              {info.type === "normal" && (
-                                <div className="text-xs font-normal text-gray-400 mt-0.5">{getDayCount(day, dateStr)}명</div>
-                              )}
+                              {info.type === "holiday" && <div className="text-[10px] font-normal text-red-500 mt-0.5">{info.label}</div>}
+                              {info.type === "vacation" && <div className="text-[10px] font-normal text-blue-500 mt-0.5">{info.label}</div>}
+                              {info.type === "normal" && <div className="text-xs font-normal text-gray-400 mt-0.5">{getDayCount(day, dateStr)}명</div>}
                             </button>
                           </th>
                         );
@@ -710,46 +1103,61 @@ export default function SchedulePage() {
                           const isToday = dateStr === todayStr;
                           const isOff = info.type !== "normal";
                           const students = getGridEntries(time, day, dateStr);
+                          const cellId = `${day}-${time}`;
                           return (
-                            <td key={day} className={cn(
-                              "py-2 px-2 align-top",
-                              isToday && "bg-primary-50/50",
-                              isOff && !isToday && "bg-gray-50/50",
-                            )}>
-                              {isOff ? (
-                                <div className="min-h-[40px]" />
-                              ) : (
-                                <div className="flex flex-col gap-1 min-h-[40px]">
-                                  {students.map((s) => {
-                                    const att = weekAttendance?.[dateStr]?.[s.studentId];
-                                    const style = att ? ATTENDANCE_STYLES[att.status] : null;
-                                    const isActive = activePopover?.studentId === s.studentId && activePopover?.dateStr === dateStr;
-                                    const isFlashing = flashCard === `${s.studentId}-${dateStr}`;
-                                    return (
-                                      <button
-                                        key={s.studentId}
-                                        onClick={(e) => openPopover(e, s.studentId, dateStr)}
-                                        className={cn(
-                                          "text-xs font-medium px-2 py-1.5 rounded-md border transition-colors w-full text-left flex items-center justify-between gap-1",
-                                          style ? style.bg : studentColorMap.get(s.studentId),
-                                          isActive && "ring-2 ring-primary-400",
-                                          isFlashing && "animate-att-flash",
-                                        )}
-                                      >
-                                        <span>{s.studentName}</span>
-                                        {style && <span className="text-[10px] opacity-75">{style.label}</span>}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </td>
+                            <DroppableCell
+                              key={day}
+                              id={cellId}
+                              day={day}
+                              time={time}
+                              isToday={isToday}
+                              disabled={isOff}
+                              className={cn(isOff && !isToday && "bg-gray-50/50")}
+                            >
+                              {students.map((s) => {
+                                // Only show attendance if chip is NOT from a different-date override
+                                const overrideForChip = weekOverrides.find(
+                                  o => o.studentId === s.studentId && o.newDate === dateStr && o.newTime === time
+                                );
+                                const isFromDifferentDate = overrideForChip && overrideForChip.originalDate !== dateStr;
+                                const att = isFromDifferentDate ? null : weekAttendance?.[dateStr]?.[s.studentId];
+                                const attStyle = att ? ATTENDANCE_STYLES[att.status] : null;
+                                const chipId = `${s.studentId}-${day}-${time}`;
+                                return (
+                                  <DraggableChip
+                                    key={chipId}
+                                    id={chipId}
+                                    studentId={s.studentId}
+                                    studentName={s.studentName}
+                                    colorClass={attStyle ? attStyle.bg : (studentColorMap.get(s.studentId) || STUDENT_COLORS[0])}
+                                    day={day}
+                                    time={time}
+                                    onClick={(e) => openPopover(e, s.studentId, dateStr)}
+                                    suffix={attStyle ? <span className="text-[10px] opacity-75">{attStyle.label}</span> : undefined}
+                                    className={cn(
+                                      "w-full",
+                                      highlightStudentId && highlightStudentId === s.studentId && "ring-2 ring-primary-400",
+                                      highlightStudentId && highlightStudentId !== s.studentId && "opacity-30",
+                                    )}
+                                    disabled={!!att}
+                                  />
+                                );
+                              })}
+                            </DroppableCell>
                           );
                         })}
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                <DragOverlay dropAnimation={null}>
+                  {activeDragEntry && (
+                    <div className={cn("text-xs font-medium px-2 py-1.5 rounded-md border shadow-lg", activeDragEntry.colorClass)}>
+                      {activeDragEntry.studentName}
+                    </div>
+                  )}
+                </DragOverlay>
+                </DndContext>
               </Card>
 
               {/* Mobile */}
@@ -757,7 +1165,6 @@ export default function SchedulePage() {
                 {weekDayInfos.map(({ day, date, dateStr, info }) => {
                   const isToday = dateStr === todayStr;
                   const isOff = info.type !== "normal";
-
                   const dayStudents: { time: string; entries: ScheduleEntry[] }[] = [];
                   if (!isOff) {
                     for (const time of TIME_SLOTS) {
@@ -765,7 +1172,6 @@ export default function SchedulePage() {
                       if (entries.length > 0) dayStudents.push({ time, entries });
                     }
                   }
-
                   return (
                     <Card key={day} padding={false}>
                       <button
@@ -778,24 +1184,13 @@ export default function SchedulePage() {
                         )}
                       >
                         <div className="flex items-center gap-2">
-                          <span className={cn(
-                            "text-sm font-bold",
-                            isToday ? "text-primary-700"
-                              : info.type === "holiday" ? "text-red-500"
-                              : info.type === "vacation" ? "text-blue-500"
-                              : "text-gray-900",
-                          )}>
+                          <span className={cn("text-sm font-bold", isToday ? "text-primary-700" : info.type === "holiday" ? "text-red-500" : info.type === "vacation" ? "text-blue-500" : "text-gray-900")}>
                             {DAY_LABELS[day]}요일 {date.getMonth() + 1}/{date.getDate()}
                           </span>
                           {isToday && <Badge variant="active" size="sm">오늘</Badge>}
                         </div>
                         {isOff ? (
-                          <span className={cn(
-                            "text-xs",
-                            info.type === "holiday" ? "text-red-500" : info.type === "vacation" ? "text-blue-500" : "text-gray-400",
-                          )}>
-                            {info.label ?? "비수업일"}
-                          </span>
+                          <span className={cn("text-xs", info.type === "holiday" ? "text-red-500" : info.type === "vacation" ? "text-blue-500" : "text-gray-400")}>{info.label ?? "비수업일"}</span>
                         ) : (
                           <span className="text-xs text-gray-500">{getDayCount(day, dateStr)}명</span>
                         )}
@@ -809,17 +1204,15 @@ export default function SchedulePage() {
                                 {entries.map((s) => {
                                   const att = weekAttendance?.[dateStr]?.[s.studentId];
                                   const style = att ? ATTENDANCE_STYLES[att.status] : null;
-                                  const isActive = activePopover?.studentId === s.studentId && activePopover?.dateStr === dateStr;
-                                  const isFlashing = flashCard === `${s.studentId}-${dateStr}`;
                                   return (
                                     <button
                                       key={s.studentId}
                                       onClick={(e) => openPopover(e, s.studentId, dateStr)}
                                       className={cn(
-                                        "text-xs font-medium px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1",
+                                        "text-xs font-medium px-2.5 py-2 rounded-md border transition-all flex items-center gap-1",
                                         style ? style.bg : studentColorMap.get(s.studentId),
-                                        isActive && "ring-2 ring-primary-400",
-                                        isFlashing && "animate-att-flash",
+                                        highlightStudentId && highlightStudentId === s.studentId && "ring-2 ring-primary-400",
+                                        highlightStudentId && highlightStudentId !== s.studentId && "opacity-30",
                                       )}
                                     >
                                       <span>{s.studentName}</span>
@@ -836,7 +1229,6 @@ export default function SchedulePage() {
                   );
                 })}
               </div>
-
             </>
               );
           })()}
@@ -844,34 +1236,18 @@ export default function SchedulePage() {
           {/* ─── MONTHLY VIEW ────────────────────── */}
           {view === "monthly" && (
             <>
-              {/* Month nav */}
               <div className="flex items-center justify-center gap-3 mb-4">
-                <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-                  <ChevronLeft className="w-5 h-5 text-gray-600" />
-                </button>
-                <button onClick={goToday} className={cn(
-                  "text-sm font-medium px-3 py-1 rounded-full transition-colors",
-                  monthYear.year === today.getFullYear() && monthYear.month === today.getMonth()
-                    ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100",
-                )}>이번달</button>
+                <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-gray-100 transition-colors"><ChevronLeft className="w-5 h-5 text-gray-600" /></button>
+                <button onClick={goToday} className={cn("text-sm font-medium px-3 py-1 rounded-full transition-colors", monthYear.year === today.getFullYear() && monthYear.month === today.getMonth() ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100")}>이번달</button>
                 <span className="text-lg font-bold text-gray-900">{monthYear.year}년 {MONTH_NAMES[monthYear.month]}</span>
-                <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-                  <ChevronRight className="w-5 h-5 text-gray-600" />
-                </button>
+                <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-gray-100 transition-colors"><ChevronRight className="w-5 h-5 text-gray-600" /></button>
               </div>
-
               <Card padding={false}>
-                {/* Day headers */}
                 <div className="grid grid-cols-7 border-b border-gray-200">
                   {["일", "월", "화", "수", "목", "금", "토"].map((d, i) => (
-                    <div key={d} className={cn(
-                      "py-2 text-center text-xs font-semibold",
-                      i === 0 ? "text-red-500" : i === 6 ? "text-blue-500" : "text-gray-500",
-                    )}>{d}</div>
+                    <div key={d} className={cn("py-2 text-center text-xs font-semibold", i === 0 ? "text-red-500" : i === 6 ? "text-blue-500" : "text-gray-500")}>{d}</div>
                   ))}
                 </div>
-
-                {/* Calendar cells */}
                 <div className="grid grid-cols-7">
                   {getCalendarDays(monthYear.year, monthYear.month).map((cell, idx) => {
                     const dateStr = toDateStr(cell.year, cell.month, cell.date);
@@ -880,15 +1256,10 @@ export default function SchedulePage() {
                     const students = info.type === "normal" ? getStudentsForDay(dayName, dateStr) : [];
                     const isToday = dateStr === todayStr;
                     const dayOfWeek = new Date(cell.year, cell.month, cell.date).getDay();
-
                     return (
                       <button
                         key={idx}
-                        onClick={() => {
-                          const d = new Date(cell.year, cell.month, cell.date);
-                          setWeekMonday(getMonday(d));
-                          setView("weekly");
-                        }}
+                        onClick={() => { setWeekMonday(getMonday(new Date(cell.year, cell.month, cell.date))); setView("weekly"); }}
                         className={cn(
                           "min-h-[72px] sm:min-h-[90px] p-1.5 border-b border-r border-gray-100 transition-colors text-left hover:bg-primary-50/40",
                           !cell.isCurrentMonth && "bg-gray-50/50",
@@ -905,28 +1276,16 @@ export default function SchedulePage() {
                             cell.isCurrentMonth && dayOfWeek === 6 && "text-blue-500",
                             cell.isCurrentMonth && dayOfWeek > 0 && dayOfWeek < 6 && "text-gray-700",
                             isToday && "bg-primary-600 text-white",
-                          )}>
-                            {cell.date}
-                          </span>
-                          {cell.isCurrentMonth && students.length > 0 && (
-                            <span className="text-[10px] font-medium text-primary-600 bg-primary-50 rounded px-1">
-                              {students.length}명
-                            </span>
-                          )}
+                          )}>{cell.date}</span>
+                          {cell.isCurrentMonth && students.length > 0 && <span className="text-[10px] font-medium text-primary-600 bg-primary-50 rounded px-1">{students.length}명</span>}
                         </div>
-                        {cell.isCurrentMonth && info.type === "holiday" && (
-                          <div className="mt-0.5 text-[10px] font-medium text-red-600 truncate">{info.label}</div>
-                        )}
-                        {cell.isCurrentMonth && info.type === "vacation" && (
-                          <div className="mt-0.5 text-[10px] font-medium text-blue-600 truncate">{info.label}</div>
-                        )}
+                        {cell.isCurrentMonth && info.type === "holiday" && <div className="mt-0.5 text-[10px] font-medium text-red-600 truncate">{info.label}</div>}
+                        {cell.isCurrentMonth && info.type === "vacation" && <div className="mt-0.5 text-[10px] font-medium text-blue-600 truncate">{info.label}</div>}
                       </button>
                     );
                   })}
                 </div>
               </Card>
-
-              {/* Legend */}
               <div className="mt-3 flex flex-wrap gap-3 text-xs text-gray-500">
                 <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100 border border-red-200" /> 공휴일</span>
                 <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-100 border border-blue-200" /> 방학</span>
@@ -935,28 +1294,18 @@ export default function SchedulePage() {
             </>
           )}
 
-          {/* ─── YEARLY VIEW ────���────────────────── */}
+          {/* ─── YEARLY VIEW ─────────────────────── */}
           {view === "yearly" && (
             <>
-              {/* Year nav */}
               <div className="flex items-center justify-center gap-3 mb-4">
-                <button onClick={() => setYearView((y) => y - 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-                  <ChevronLeft className="w-5 h-5 text-gray-600" />
-                </button>
-                <button onClick={() => setYearView(today.getFullYear())} className={cn(
-                  "text-sm font-medium px-3 py-1 rounded-full transition-colors",
-                  yearView === today.getFullYear() ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100",
-                )}>올해</button>
+                <button onClick={() => setYearView((y) => y - 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors"><ChevronLeft className="w-5 h-5 text-gray-600" /></button>
+                <button onClick={() => setYearView(today.getFullYear())} className={cn("text-sm font-medium px-3 py-1 rounded-full transition-colors", yearView === today.getFullYear() ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100")}>올해</button>
                 <span className="text-lg font-bold text-gray-900">{yearView}년</span>
-                <button onClick={() => setYearView((y) => y + 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-                  <ChevronRight className="w-5 h-5 text-gray-600" />
-                </button>
+                <button onClick={() => setYearView((y) => y + 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors"><ChevronRight className="w-5 h-5 text-gray-600" /></button>
               </div>
-
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                 {Array.from({ length: 12 }, (_, m) => {
                   const cells = getCalendarDays(yearView, m);
-                  // Count class days in this month
                   let classDayCount = 0;
                   let holidayCount = 0;
                   for (const cell of cells) {
@@ -967,28 +1316,19 @@ export default function SchedulePage() {
                     if (info.type === "normal" && getStudentsForDay(dayName, dateStr).length > 0) classDayCount++;
                     if (info.type === "holiday") holidayCount++;
                   }
-
                   return (
                     <Card key={m} padding={false} className="overflow-hidden">
-                      <button
-                        onClick={() => { setMonthYear({ year: yearView, month: m }); setView("monthly"); }}
-                        className="w-full text-left hover:bg-gray-50 transition-colors"
-                      >
+                      <button onClick={() => { setMonthYear({ year: yearView, month: m }); setView("monthly"); }} className="w-full text-left hover:bg-gray-50 transition-colors">
                         <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
-                          <span className={cn(
-                            "text-sm font-bold",
-                            yearView === today.getFullYear() && m === today.getMonth() ? "text-primary-700" : "text-gray-900",
-                          )}>{MONTH_NAMES[m]}</span>
+                          <span className={cn("text-sm font-bold", yearView === today.getFullYear() && m === today.getMonth() ? "text-primary-700" : "text-gray-900")}>{MONTH_NAMES[m]}</span>
                           <span className="text-[10px] text-gray-400">{classDayCount}일 수업{holidayCount > 0 ? ` · ${holidayCount}일 휴일` : ""}</span>
                         </div>
                         <div className="px-2 py-1.5">
-                          {/* Mini header */}
                           <div className="grid grid-cols-7 mb-0.5">
                             {["일", "월", "화", "수", "목", "금", "토"].map((d) => (
                               <div key={d} className="text-center text-[9px] text-gray-400 font-medium">{d}</div>
                             ))}
                           </div>
-                          {/* Mini calendar */}
                           <div className="grid grid-cols-7 gap-px">
                             {cells.map((cell, idx) => {
                               const dateStr = toDateStr(cell.year, cell.month, cell.date);
@@ -996,7 +1336,6 @@ export default function SchedulePage() {
                               const info = cell.isCurrentMonth ? getDateInfo(dateStr, dayName) : null;
                               const hasClass = info?.type === "normal" && getStudentsForDay(dayName, dateStr).length > 0;
                               const isToday = dateStr === todayStr;
-
                               return (
                                 <div key={idx} className="flex items-center justify-center h-5">
                                   <span className={cn(
@@ -1008,9 +1347,7 @@ export default function SchedulePage() {
                                     cell.isCurrentMonth && hasClass && "text-gray-700 font-medium",
                                     cell.isCurrentMonth && info?.type === "normal" && !hasClass && "text-gray-400",
                                     isToday && "bg-primary-600 !text-white",
-                                  )}>
-                                    {cell.date}
-                                  </span>
+                                  )}>{cell.date}</span>
                                 </div>
                               );
                             })}
@@ -1021,8 +1358,6 @@ export default function SchedulePage() {
                   );
                 })}
               </div>
-
-              {/* Legend */}
               <div className="mt-3 flex flex-wrap gap-3 text-xs text-gray-500">
                 <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-50 border border-red-200" /> 공휴일</span>
                 <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-50 border border-blue-200" /> 방학</span>
@@ -1033,57 +1368,66 @@ export default function SchedulePage() {
         </>
       )}
 
-      {/* ─── Floating attendance bubble (shared by daily & weekly) ── */}
-      {activePopover && (() => {
-        const { studentId, dateStr, rect } = activePopover;
-        const att = view === "daily"
-          ? (dailyEntries.find(e => e.studentId === studentId)?.attendance ?? null)
-          : (weekAttendance?.[dateStr]?.[studentId] ?? null);
-        const bubbleWidth = 220;
-        const padding = 8;
-        const centerX = rect.left + (rect.right - rect.left) / 2;
-        const clampedLeft = Math.max(padding + bubbleWidth / 2, Math.min(centerX, window.innerWidth - padding - bubbleWidth / 2));
-        const fitsBelow = rect.bottom + 6 + 40 < window.innerHeight;
-        const bubbleTop = fitsBelow ? rect.bottom + 6 : rect.top - 6;
-        return (
+      {/* ─── SchedulePopover (unified daily/weekly) ── */}
+      {popover && (
+        <SchedulePopover
+          anchorRect={popover.anchorRect}
+          onClose={() => setPopover(null)}
+          onNavigate={() => {
+            const sid = popover.studentId;
+            setPopover(null);
+            router.push(`/students/${sid}`);
+          }}
+          currentAttendanceStatus={popoverAttStatus}
+          attendanceButtons={ATTENDANCE_BUTTONS}
+          onAttendance={(status) => {
+            attendanceMutation.mutate({ studentId: popover.studentId, date: popover.dateStr, status });
+          }}
+        />
+      )}
+
+      {/* ─── DnD Confirmation Modal ── */}
+      <Modal
+        isOpen={!!dndConfirm}
+        onClose={() => { setDndConfirm(null); setScheduleError(null); }}
+        title={`${dndConfirm?.studentName ?? ""} — 스케줄 이동`}
+        footer={
           <>
-            <div className="fixed inset-0 z-40" onClick={() => setActivePopover(null)} />
-            <div
-              className="fixed z-50 flex gap-1.5 animate-bubble-pop"
-              style={{ top: bubbleTop, left: clampedLeft, transform: fitsBelow ? "translateX(-50%)" : "translateX(-50%) translateY(-100%)" }}
-            >
-              {ATTENDANCE_BUTTONS.map((btn, i) => (
-                <button
-                  key={btn.status}
-                  onClick={() => {
-                    if (view === "daily") {
-                      dailyMutation.mutate({ studentId, status: btn.status as DailyStatus });
-                    } else {
-                      attendanceMutation.mutate({ studentId, date: dateStr, status: btn.status });
-                    }
-                  }}
-                  className={cn(
-                    "px-3.5 py-1.5 rounded-full text-white font-bold text-xs shadow-lg transition-transform hover:scale-110 animate-bubble-btn",
-                    btn.color,
-                    att?.status === btn.status && "ring-2 ring-offset-1 ring-gray-400",
-                  )}
-                  style={{ animationDelay: `${i * 60}ms` }}
-                >
-                  {btn.label}
-                </button>
-              ))}
+            <Button variant="secondary" onClick={() => { setDndConfirm(null); setScheduleError(null); }}>취소</Button>
+          </>
+        }
+      >
+        {dndConfirm && (
+          <div className="space-y-4">
+            <div className="text-sm text-gray-700 text-center py-2">
+              <span className="font-semibold">{DAY_LABELS[dndConfirm.from.day]} {TIME_LABELS[dndConfirm.from.time]}</span>
+              <span className="mx-2 text-gray-400">→</span>
+              <span className="font-semibold">{DAY_LABELS[dndConfirm.to.day]} {TIME_LABELS[dndConfirm.to.time]}</span>
+            </div>
+            {scheduleError && (
+              <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+                {scheduleError}
+              </div>
+            )}
+            <div className="flex gap-3">
               <button
-                onClick={() => { setActivePopover(null); router.push(`/students/${studentId}`); }}
-                className="px-3 py-1.5 rounded-full bg-gray-600 hover:bg-gray-700 text-white font-bold text-xs shadow-lg transition-transform hover:scale-110 animate-bubble-btn flex items-center gap-1"
-                style={{ animationDelay: `${ATTENDANCE_BUTTONS.length * 60}ms` }}
+                onClick={handleDndRecurring}
+                disabled={scheduleMutation.isPending}
+                className="flex-1 py-3 text-sm font-semibold rounded-xl border-2 border-primary-500 bg-primary-50 text-primary-700 hover:bg-primary-100 transition-colors disabled:opacity-50"
               >
-                <User className="w-3 h-3" />
-                학생정보
+                앞으로 계속
+              </button>
+              <button
+                onClick={handleDndOnce}
+                disabled={overrideMutation.isPending}
+                className="flex-1 py-3 text-sm font-semibold rounded-xl border-2 border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                이번만 변경
               </button>
             </div>
-          </>
-        );
-      })()}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

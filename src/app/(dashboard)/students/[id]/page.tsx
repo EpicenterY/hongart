@@ -20,37 +20,41 @@ import { formatDate, formatDateShort, formatCurrency, formatTime, DAY_LABELS } f
 
 type StudentStatus = "ACTIVE" | "PAUSED" | "WITHDRAWN";
 type AttendanceStatus = "PRESENT" | "ABSENT" | "LATE" | "MAKEUP";
-type PaymentStatus = "PAID" | "PENDING";
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
 type MemoCategory = "GENERAL" | "PROGRESS" | "ISSUE" | "PARENT_CONTACT" | "OTHER";
-type LedgerType = "CREDIT" | "DEBIT" | "PLAN_CHANGE";
+
+interface ScheduleSlot { day: string; time: string; }
 
 interface Subscription {
   id: string;
   daysPerWeek: number;
-  scheduleDays: string[];
-  scheduleTime: string;
+  schedule: ScheduleSlot[];
   startDate: string;
   monthlyFee: number;
   isActive: boolean;
 }
 
-interface LedgerEntry {
+interface PaymentSession {
   id: string;
   studentId: string;
-  type: LedgerType;
-  date: string;
-  seq: number;
-  sessionDelta: number;
-  balanceAfter: number;
-  amount?: number;
-  method?: PaymentMethod | null;
-  paymentStatus?: PaymentStatus;
-  attendanceStatus?: AttendanceStatus;
-  checkInAt?: string | null;
-  daysPerWeek?: number;
-  monthlyFee?: number;
+  capacity: number;
+  frozen: boolean;
+  amount: number;
+  method: PaymentMethod;
+  daysPerWeek: number;
+  monthlyFee: number;
   note: string | null;
+  createdAt: string;
+}
+
+interface AttendanceRecord {
+  id: string;
+  studentId: string;
+  date: string;
+  status: AttendanceStatus;
+  checkInAt: string | null;
+  note: string | null;
+  createdAt: string;
 }
 
 interface Memo {
@@ -61,15 +65,14 @@ interface Memo {
 }
 
 interface BalanceInfo {
-  balance: number;
-  totalPerCycle: number;
-  currentCycleUsed: number;
-  currentCycleTotal: number;
-  currentCycleRemaining: number;
-  needsPayment: boolean;
+  remaining: number;
+  totalCapacity: number;
+  totalConsuming: number;
+  currentSessionUsed: number;
+  currentSessionTotal: number;
+  currentSessionRemaining: number;
+  paymentState: "OK" | "NEEDS_PAYMENT" | "NEW" | "NO_SUBSCRIPTION";
   hasPaymentHistory: boolean;
-  hasPendingCredit: boolean;
-  paymentState: "OK" | "NEEDS_PAYMENT" | "PENDING_CREDIT" | "NEW" | "NO_SUBSCRIPTION";
 }
 
 interface Plan {
@@ -83,11 +86,22 @@ interface PlanChangePreview {
   currentPlan: { daysPerWeek: number; label: string; monthlyFee: number; totalSessions: number };
   newPlan: { daysPerWeek: number; label: string; monthlyFee: number; totalSessions: number };
   usedSessions: number;
-  unitPrice: number;
-  usedAmount: number;
-  remainingBalance: number;
-  proratedAmount: number;
+  unusedCount: number;
+  unusedCredit: number;
+  recommendedAmount: number;
   isCredit: boolean;
+}
+
+interface PendingPlanChange {
+  id: string;
+  studentId: string;
+  previousDaysPerWeek: number;
+  previousSchedule: ScheduleSlot[];
+  previousMonthlyFee: number;
+  frozenSessionId: string | null;
+  recommendedAmount: number;
+  isCredit: boolean;
+  createdAt: string;
 }
 
 interface StudentDetail {
@@ -101,9 +115,11 @@ interface StudentDetail {
   note: string | null;
   createdAt: string;
   subscription: Subscription | null;
-  ledger: LedgerEntry[];
+  paymentSessions: PaymentSession[];
+  attendance: AttendanceRecord[];
   memos: Memo[];
   balanceInfo: BalanceInfo;
+  pendingPlanChange: PendingPlanChange | null;
 }
 
 const statusBadgeMap: Record<StudentStatus, { variant: "active" | "paused" | "withdrawn"; label: string }> = {
@@ -117,11 +133,6 @@ const attendanceBadgeMap: Record<AttendanceStatus, { variant: "present" | "absen
   ABSENT: { variant: "absent", label: "결석" },
   LATE: { variant: "late", label: "지각" },
   MAKEUP: { variant: "makeup", label: "보강" },
-};
-
-const paymentStatusBadgeMap: Record<PaymentStatus, { variant: "paid" | "pending"; label: string }> = {
-  PAID: { variant: "paid", label: "완납" },
-  PENDING: { variant: "pending", label: "미납" },
 };
 
 const memoCategoryMap: Record<MemoCategory, { variant: "active" | "paused" | "withdrawn" | "present" | "late"; label: string }> = {
@@ -153,6 +164,68 @@ const BASE_TABS = [
   { key: "memos", label: "메모" },
 ];
 
+/** 소모성 출석 여부 */
+function isConsuming(status: string): boolean {
+  return status !== "ABSENT";
+}
+
+/** FilledSession for display */
+interface FilledSessionDisplay {
+  session: PaymentSession;
+  assigned: AttendanceRecord[];
+  absents: AttendanceRecord[];
+  filledCount: number;
+  remaining: number;
+}
+
+/** Client-side filling computation */
+function computeFillingClient(
+  sessions: PaymentSession[],
+  records: AttendanceRecord[],
+): { filledSessions: FilledSessionDisplay[]; unassigned: AttendanceRecord[] } {
+  const sortedSessions = [...sessions].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+  const sortedRecords = [...records].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+  );
+
+  const filledSessions: FilledSessionDisplay[] = sortedSessions.map((session) => ({
+    session,
+    assigned: [],
+    absents: [],
+    filledCount: 0,
+    remaining: session.capacity,
+  }));
+
+  const unassigned: AttendanceRecord[] = [];
+
+  let sessionIdx = 0;
+  for (const record of sortedRecords) {
+    const consuming = isConsuming(record.status);
+
+    if (consuming) {
+      while (sessionIdx < filledSessions.length && filledSessions[sessionIdx].remaining <= 0) {
+        sessionIdx++;
+      }
+      if (sessionIdx < filledSessions.length) {
+        filledSessions[sessionIdx].assigned.push(record);
+        filledSessions[sessionIdx].filledCount++;
+        filledSessions[sessionIdx].remaining--;
+      } else {
+        unassigned.push(record);
+      }
+    } else {
+      const idx = Math.min(sessionIdx, filledSessions.length - 1);
+      if (idx >= 0) {
+        filledSessions[idx].absents.push(record);
+      }
+    }
+  }
+
+  return { filledSessions, unassigned };
+}
+
 export default function StudentDetailPage({
   params,
 }: {
@@ -171,7 +244,6 @@ export default function StudentDetailPage({
   const [memoContent, setMemoContent] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("TRANSFER");
-  const [processingPaymentId, setProcessingPaymentId] = useState<string | null>(null);
   const [expandedCycles, setExpandedCycles] = useState<Set<number>>(new Set());
   const [selectedPlan, setSelectedPlan] = useState<number | null>(null);
   const [showPlanConfirmModal, setShowPlanConfirmModal] = useState(false);
@@ -240,15 +312,14 @@ export default function StudentDetailPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           daysPerWeek: newPlan.daysPerWeek,
-          scheduleDays: student.subscription.scheduleDays,
-          scheduleTime: student.subscription.scheduleTime,
+          schedule: student.subscription.schedule,
           monthlyFee: newPlan.monthlyFee,
           planChange: {
             previousPlan: planPreview.currentPlan.label,
             newPlan: planPreview.newPlan.label,
-            proratedAmount: planPreview.proratedAmount,
-            isCredit: planPreview.isCredit,
             noPrior: planPreview.noPrior ?? false,
+            recommendedAmount: planPreview.recommendedAmount,
+            isCredit: planPreview.isCredit,
           },
         }),
       });
@@ -261,36 +332,24 @@ export default function StudentDetailPage({
       queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
       setSelectedPlan(null);
       setShowPlanConfirmModal(false);
+      // 결제 탭으로 자동 이동 (대기 카드 표시)
+      setActiveTab("payments");
     },
   });
 
   const paymentMutation = useMutation({
     mutationFn: async () => {
-      if (processingPaymentId) {
-        const res = await fetch(`/api/payments/${processingPaymentId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: "PAID",
-            method: paymentMethod,
-            amount: Number(paymentAmount),
-          }),
-        });
-        if (!res.ok) throw new Error("결제 처리에 실패했습니다.");
-        return res.json();
-      } else {
-        const res = await fetch("/api/payments", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            studentId: id,
-            amount: Number(paymentAmount),
-            method: paymentMethod,
-          }),
-        });
-        if (!res.ok) throw new Error("결제 처리에 실패했습니다.");
-        return res.json();
-      }
+      const res = await fetch("/api/payments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentId: id,
+          amount: Number(paymentAmount),
+          method: paymentMethod,
+        }),
+      });
+      if (!res.ok) throw new Error("결제 처리에 실패했습니다.");
+      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["student", id] });
@@ -298,7 +357,33 @@ export default function StudentDetailPage({
       queryClient.invalidateQueries({ queryKey: ["payments"] });
       queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
       setShowPaymentModal(false);
-      setProcessingPaymentId(null);
+    },
+  });
+
+  const cancelPlanChangeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/students/${id}/plan-change`, { method: "DELETE" });
+      if (!res.ok) throw new Error("플랜 변경 취소에 실패했습니다.");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["student", id] });
+      queryClient.invalidateQueries({ queryKey: ["payments"] });
+      queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
+    },
+  });
+
+  const confirmCreditMutation = useMutation({
+    mutationFn: async () => {
+      // Credit case: just delete pending (no payment session needed, keep new plan)
+      const res = await fetch(`/api/students/${id}/plan-change`, { method: "POST" });
+      if (!res.ok) throw new Error("환불 확인에 실패했습니다.");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["student", id] });
+      queryClient.invalidateQueries({ queryKey: ["payments"] });
+      queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
     },
   });
 
@@ -343,153 +428,37 @@ export default function StudentDetailPage({
 
   const statusBadge = statusBadgeMap[student.status];
   const { balanceInfo } = student;
-  const balance = balanceInfo.balance;
-  const totalPerCycle = balanceInfo.totalPerCycle;
-  const usedSessions = balanceInfo.currentCycleUsed;
-  const remainingClasses = balanceInfo.paymentState === "OK" || balanceInfo.paymentState === "PENDING_CREDIT"
-    ? balanceInfo.currentCycleRemaining : null;
-  const hasCurrentPayment = balanceInfo.paymentState === "OK" || balanceInfo.paymentState === "PENDING_CREDIT";
-  const progressPercent = totalPerCycle > 0 && hasCurrentPayment
-    ? Math.round((usedSessions / totalPerCycle) * 100)
+  const remaining = balanceInfo.remaining;
+  const currentSessionTotal = balanceInfo.currentSessionTotal;
+  const currentSessionUsed = balanceInfo.currentSessionUsed;
+  const currentSessionRemaining = balanceInfo.currentSessionRemaining;
+  const hasCurrentPayment = balanceInfo.paymentState === "OK";
+  const progressPercent = currentSessionTotal > 0 && hasCurrentPayment
+    ? Math.round((currentSessionUsed / currentSessionTotal) * 100)
     : 0;
 
-  // Ledger entries
-  const credits = student.ledger.filter((e) => e.type === "CREDIT");
-  const debits = student.ledger.filter((e) => e.type === "DEBIT");
+  // Compute FilledSessions for display
+  const { filledSessions, unassigned } = computeFillingClient(
+    student.paymentSessions,
+    student.attendance,
+  );
 
-  // Unpaid count: PENDING credits
-  const unpaidCount = credits.filter((e) => e.paymentStatus === "PENDING").length;
-  const unpaidBadge = unpaidCount + (balanceInfo.paymentState === "NEEDS_PAYMENT" || balanceInfo.paymentState === "NEW" ? 1 : 0);
+  // Display groups: reverse for most recent first
+  const displayGroups = [...filledSessions].reverse();
+
+  // Total stats
+  const totalPaidSessions = student.paymentSessions.length;
+  const totalCapacity = student.paymentSessions.reduce((sum, s) => sum + s.capacity, 0);
+  const totalAttendance = student.attendance.filter((a) => isConsuming(a.status)).length;
+
+  // Unpaid badge
+  const unpaidBadge = balanceInfo.paymentState === "NEEDS_PAYMENT" || balanceInfo.paymentState === "NEW" ? 1 : 0;
 
   const detailTabs = BASE_TABS.map((tab) =>
     tab.key === "payments" && unpaidBadge > 0
       ? { ...tab, badge: unpaidBadge }
       : tab
   );
-
-  // Cycle grouping: 버킷 채우기 방식
-  // - 첫 번째 결제(CREDIT)부터 DEBIT을 채움
-  // - 가득 차면 다음 CREDIT 버킷으로 이동
-  // - 모든 CREDIT이 차면 "미결제 출석" 오버플로우 그룹
-  // - PLAN_CHANGE는 구간을 나눔 (이전 CREDIT과 이후 CREDIT 분리)
-  interface CycleGroup {
-    index: number; // CREDIT 그룹: 1,2,3... / 오버플로우: 0
-    credit: LedgerEntry | null;
-    records: LedgerEntry[]; // DEBIT entries (chronological)
-    presentCount: number;
-    cycleSize: number;
-  }
-
-  const cycleGroups: CycleGroup[] = (() => {
-    if (student.ledger.length === 0) return [];
-
-    // 세그먼트 분리: seq(생성 순서) 기준으로 분리해야
-    // 플랜 변경 전에 기록한 출석이 날짜와 무관하게 이전 구간에 포함됨
-    const seqSorted = [...student.ledger].sort((a, b) => a.seq - b.seq);
-
-    type Segment = { credits: LedgerEntry[]; debits: LedgerEntry[] };
-    const segments: Segment[] = [{ credits: [], debits: [] }];
-
-    for (const entry of seqSorted) {
-      if (entry.type === "PLAN_CHANGE") {
-        segments.push({ credits: [], debits: [] });
-      } else if (entry.type === "CREDIT") {
-        segments[segments.length - 1].credits.push(entry);
-      } else if (entry.type === "DEBIT") {
-        segments[segments.length - 1].debits.push(entry);
-      }
-    }
-
-    // 각 세그먼트 내 DEBIT을 날짜순 정렬 (표시용)
-    for (const seg of segments) {
-      seg.debits.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    }
-
-    // 각 구간에서 DEBIT을 CREDIT 버킷에 순서대로 채우기
-    const allGroups: CycleGroup[] = [];
-    let creditNum = 0;
-
-    for (let segIdx = 0; segIdx < segments.length; segIdx++) {
-      const seg = segments[segIdx];
-      if (seg.credits.length === 0 && seg.debits.length === 0) continue;
-
-      // 이 구간이 PLAN_CHANGE로 끝났는지 (= 마지막 구간이 아닌 경우)
-      const endedByPlanChange = segIdx < segments.length - 1;
-
-      // 버킷 생성
-      const buckets = seg.credits.map((c) => ({
-        credit: c,
-        records: [] as LedgerEntry[],
-        capacity: c.sessionDelta,
-      }));
-
-      // DEBIT을 첫 번째 빈 버킷부터 채우기
-      // 결석(ABSENT)은 버킷에 포함하되 capacity를 소모하지 않음
-      let bIdx = 0;
-      const overflow: LedgerEntry[] = [];
-
-      for (const debit of seg.debits) {
-        const countsTowardCapacity = debit.attendanceStatus !== "ABSENT";
-        while (bIdx < buckets.length) {
-          const counted = buckets[bIdx].records.filter((e) => e.attendanceStatus !== "ABSENT").length;
-          if (counted < buckets[bIdx].capacity) break;
-          bIdx++;
-        }
-        if (bIdx < buckets.length) {
-          buckets[bIdx].records.push(debit);
-        } else if (countsTowardCapacity) {
-          overflow.push(debit);
-        } else if (buckets.length > 0) {
-          // 결석은 마지막 버킷에 붙이기
-          buckets[buckets.length - 1].records.push(debit);
-        } else {
-          overflow.push(debit);
-        }
-      }
-
-      // 버킷 → 그룹 변환
-      for (let i = 0; i < buckets.length; i++) {
-        const b = buckets[i];
-        creditNum++;
-        const pc = b.records.filter((e) => e.attendanceStatus !== "ABSENT").length;
-
-        // 플랜 변경으로 종료된 구간의 마지막 미완 버킷은 사용량으로 용량 고정
-        let effectiveCycleSize = b.credit.sessionDelta;
-        if (endedByPlanChange && i === buckets.length - 1 && pc < b.credit.sessionDelta) {
-          effectiveCycleSize = pc;
-        }
-
-        allGroups.push({
-          index: creditNum,
-          credit: b.credit,
-          records: b.records,
-          presentCount: pc,
-          cycleSize: effectiveCycleSize,
-        });
-      }
-
-      // 오버플로우 그룹
-      if (overflow.length > 0) {
-        const pc = overflow.filter((e) => e.attendanceStatus !== "ABSENT").length;
-        allGroups.push({
-          index: 0,
-          credit: null,
-          records: overflow,
-          presentCount: pc,
-          cycleSize: overflow.length,
-        });
-      }
-    }
-
-    return allGroups.reverse(); // most recent first for display
-  })();
-
-  // Total stats from ledger
-  const totalPaidCredits = credits.filter((e) => e.paymentStatus === "PAID").length;
-  const totalPaidSessions = credits
-    .filter((e) => e.paymentStatus === "PAID")
-    .reduce((sum, e) => sum + e.sessionDelta, 0);
-  const totalAttendance = debits.filter((e) => e.attendanceStatus !== "ABSENT").length;
 
   return (
     <div className="px-4 py-6 lg:px-8">
@@ -528,14 +497,12 @@ export default function StudentDetailPage({
       </div>
 
       {/* Unpaid banner */}
-      {student.subscription && (balanceInfo.paymentState === "NEEDS_PAYMENT" || balanceInfo.paymentState === "PENDING_CREDIT" || balanceInfo.paymentState === "NEW") && (
-        <div className="mb-6 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 flex items-center justify-between">
+      {student.subscription && (balanceInfo.paymentState === "NEEDS_PAYMENT" || balanceInfo.paymentState === "NEW") && (
+        <div className="mb-6 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <span className="text-sm font-medium text-amber-800">
-            {balanceInfo.paymentState === "PENDING_CREDIT"
-              ? "미결제 항목이 있습니다."
-              : balanceInfo.paymentState === "NEW"
-                ? "첫 결제가 필요합니다."
-                : `결제가 필요합니다. (잔여 ${balance}회)`}
+            {balanceInfo.paymentState === "NEW"
+              ? "첫 결제가 필요합니다."
+              : `결제가 필요합니다. (잔여 ${remaining}회)`}
           </span>
           <Button
             size="sm"
@@ -557,19 +524,19 @@ export default function StudentDetailPage({
               주 {student.subscription.daysPerWeek}회
             </div>
             <div className="text-sm text-gray-600">
-              {student.subscription.scheduleDays.map((d) => DAY_LABELS[d] || d).join(", ")}
+              {student.subscription.schedule.map((s) => DAY_LABELS[s.day] || s.day).join(", ")}
             </div>
           </Card>
           <Card>
             <div className="text-sm text-gray-500 mb-1">잔여 횟수</div>
-            {balance < 0 ? (
+            {remaining < 0 ? (
               <div className="font-semibold text-red-600">
-                {balance}회 (초과)
+                {remaining}회 (초과)
               </div>
             ) : hasCurrentPayment ? (
               <>
                 <div className="font-semibold text-gray-900 mb-2">
-                  {remainingClasses} / {totalPerCycle}회
+                  {currentSessionRemaining} / {currentSessionTotal}회
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2">
                   <div
@@ -597,56 +564,85 @@ export default function StudentDetailPage({
         {/* Attendance Tab */}
         {activeTab === "attendance" && (
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
               <div className="bg-primary-50 rounded-lg p-3 text-center">
-                <div className="text-2xl font-bold text-primary-700">{totalPaidCredits}</div>
+                <div className="text-xl sm:text-2xl font-bold text-primary-700">{totalPaidSessions}</div>
                 <div className="text-xs text-primary-600">총 결제 회차</div>
               </div>
               <div className="bg-blue-50 rounded-lg p-3 text-center">
-                <div className="text-2xl font-bold text-blue-700">{totalPaidSessions}</div>
+                <div className="text-xl sm:text-2xl font-bold text-blue-700">{totalCapacity}</div>
                 <div className="text-xs text-blue-600">총 결제 수업</div>
               </div>
               <div className="bg-green-50 rounded-lg p-3 text-center">
-                <div className="text-2xl font-bold text-green-700">{totalAttendance}</div>
+                <div className="text-xl sm:text-2xl font-bold text-green-700">{totalAttendance}</div>
                 <div className="text-xs text-green-600">총 출석 일</div>
               </div>
             </div>
 
-            {cycleGroups.length === 0 ? (
+            {/* Unassigned overflow */}
+            {unassigned.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50/30 overflow-hidden">
+                <div className="px-5 py-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-amber-500" />
+                      <span className="text-sm font-semibold text-gray-900">미결제 출석</span>
+                      <Badge variant="overdue">미결제</Badge>
+                    </div>
+                    <div className="text-sm font-semibold text-amber-600">
+                      {unassigned.length}회
+                    </div>
+                  </div>
+                </div>
+                <div className="border-t border-amber-100 divide-y divide-amber-50">
+                  {[...unassigned].reverse().map((record) => {
+                    const badge = attendanceBadgeMap[record.status];
+                    return (
+                      <div key={record.id} className="flex items-center justify-between px-5 py-2.5">
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm font-medium text-gray-900">
+                            {formatDateShort(record.date)}
+                          </span>
+                          {record.checkInAt && (
+                            <span className="text-xs text-gray-500">{formatTime(record.checkInAt)}</span>
+                          )}
+                        </div>
+                        <Badge variant={badge.variant}>{badge.label}</Badge>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {displayGroups.length === 0 && unassigned.length === 0 ? (
               <Card>
                 <p className="text-sm text-gray-500 text-center py-4">
                   출석 기록이 없습니다.
                 </p>
               </Card>
             ) : (
-              cycleGroups.map((group, idx) => {
+              displayGroups.map((group, idx) => {
                 const isCurrent = idx === 0;
                 const isExpanded = isCurrent
                   ? !expandedCycles.has(-1)
                   : expandedCycles.has(idx);
-                const isPaid = group.credit?.paymentStatus === "PAID";
-                const isPending = group.credit?.paymentStatus === "PENDING";
-                const hasCredit = !!group.credit;
-                const creditAmount = group.credit?.amount ?? 0;
-                const creditPlan = group.credit?.daysPerWeek
-                  ? `주 ${group.credit.daysPerWeek}회`
-                  : (student.subscription ? `주 ${student.subscription.daysPerWeek}회` : "");
-                const isOverflow = group.index === 0;
-                const countedRecords = group.records.filter((e) => e.attendanceStatus !== "ABSENT").length;
-                const remaining = hasCredit ? group.cycleSize - countedRecords : 0;
-                const groupKey = `${group.index}-${idx}`;
+                const allRecords = [...group.assigned, ...group.absents]
+                  .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                const creditPlan = `주 ${group.session.daysPerWeek}회`;
+                const groupKey = `session-${group.session.id}`;
 
                 return (
                   <div
                     key={groupKey}
                     className={cn(
                       "rounded-xl border overflow-hidden",
-                      isOverflow || isPending
-                        ? "border-amber-200 bg-amber-50/30"
+                      group.session.frozen
+                        ? "border-gray-300 bg-gray-50/30"
                         : "border-gray-200 bg-white"
                     )}
                   >
-                    {/* Cycle header */}
+                    {/* Session header */}
                     <button
                       type="button"
                       onClick={() => {
@@ -656,9 +652,8 @@ export default function StudentDetailPage({
                             if (next.has(-1)) next.delete(-1);
                             else next.add(-1);
                           } else {
-                            const key = idx;
-                            if (next.has(key)) next.delete(key);
-                            else next.add(key);
+                            if (next.has(idx)) next.delete(idx);
+                            else next.add(idx);
                           }
                           return next;
                         });
@@ -676,40 +671,24 @@ export default function StudentDetailPage({
                           <div className="text-left min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-sm font-semibold text-gray-900">
-                                {isOverflow ? "미결제 출석" : `${group.index}회차`}
-                                {isCurrent && <span className="text-primary-600"> (현재)</span>}
+                                {filledSessions.indexOf(group) + 1}회차
+                                {isCurrent && !group.session.frozen && <span className="text-primary-600"> (현재)</span>}
+                                {group.session.frozen && <span className="text-gray-500"> (종료)</span>}
                               </span>
-                              {hasCredit ? (
-                                <Badge variant={isPaid ? "paid" : "pending"}>
-                                  {isPaid ? "완납" : "미납"}
-                                </Badge>
-                              ) : (
-                                <Badge variant="overdue">미결제</Badge>
-                              )}
+                              <Badge variant="paid">완납</Badge>
                             </div>
-                            <div className="text-xs text-gray-500 mt-0.5">
-                              {isOverflow
-                                ? `${group.presentCount}회 출석 · 결제 대기`
-                                : `${formatDateShort(group.credit!.date)} · ${formatCurrency(creditAmount)} · ${creditPlan} · ${group.cycleSize}회`
-                              }
+                            <div className="text-xs text-gray-500 mt-0.5 truncate">
+                              {formatDateShort(group.session.createdAt)} · {formatCurrency(group.session.amount)} · {creditPlan} · {group.session.capacity}회
                             </div>
                           </div>
                         </div>
                         <div className="text-right flex-shrink-0 ml-3">
-                          {isOverflow ? (
-                            <div className="text-sm font-semibold text-amber-600">
-                              {group.presentCount}회
-                            </div>
-                          ) : (
-                            <>
-                              <div className="text-sm font-semibold text-gray-700">
-                                {countedRecords}/{group.cycleSize}
-                              </div>
-                              <div className="text-xs text-gray-500">
-                                잔여 {Math.max(0, remaining)}회
-                              </div>
-                            </>
-                          )}
+                          <div className="text-sm font-semibold text-gray-700">
+                            {group.filledCount}/{group.session.capacity}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            잔여 {Math.max(0, group.remaining)}회
+                          </div>
                         </div>
                       </div>
                     </button>
@@ -717,25 +696,18 @@ export default function StudentDetailPage({
                     {/* Attendance records */}
                     {isExpanded && (
                       <div className="border-t border-gray-100">
-                        {group.records.length === 0 ? (
+                        {allRecords.length === 0 ? (
                           <p className="text-sm text-gray-400 text-center py-4">출석 기록 없음</p>
                         ) : (
                           <div className="divide-y divide-gray-50">
-                            {(() => {
-                              let countedSeq = 0;
-                              return group.records.map((entry) => {
-                              const badge = attendanceBadgeMap[entry.attendanceStatus as AttendanceStatus];
-                              const isAbsent = entry.attendanceStatus === "ABSENT";
-                              if (!isAbsent) countedSeq++;
+                            {allRecords.map((entry) => {
+                              const badge = attendanceBadgeMap[entry.status];
                               return (
                                 <div
                                   key={entry.id}
                                   className="flex items-center justify-between px-5 py-2.5"
                                 >
                                   <div className="flex items-center gap-3">
-                                    <span className="text-xs font-mono text-gray-400 w-8 text-right">
-                                      {isAbsent ? "-" : `${countedSeq}/${group.cycleSize}`}
-                                    </span>
                                     <span className="text-sm font-medium text-gray-900">
                                       {formatDateShort(entry.date)}
                                     </span>
@@ -753,15 +725,14 @@ export default function StudentDetailPage({
                                   </div>
                                 </div>
                               );
-                            });
-                            })()}
+                            })}
                           </div>
                         )}
                         {/* Remaining sessions footer */}
-                        {isCurrent && !isOverflow && remaining > 0 && (
+                        {isCurrent && !group.session.frozen && group.remaining > 0 && (
                           <div className="border-t border-gray-100 px-5 py-2 bg-gray-50/50">
                             <p className="text-xs text-gray-500 text-center">
-                              잔여 {remaining}회 남음
+                              잔여 {group.remaining}회 남음
                             </p>
                           </div>
                         )}
@@ -777,24 +748,67 @@ export default function StudentDetailPage({
         {/* Payments Tab */}
         {activeTab === "payments" && (
           <div className="space-y-4">
-            {!credits.some((e) => e.paymentStatus === "PENDING") && (
-              <div className="flex justify-end">
-                <Button size="sm" onClick={() => {
-                  setProcessingPaymentId(null);
-                  if (student.subscription) {
-                    setPaymentAmount(String(student.subscription.monthlyFee));
-                  }
-                  setShowPaymentModal(true);
-                }}>
-                  <CreditCard className="w-4 h-4" />
-                  결제 처리
-                </Button>
-              </div>
+            {/* Pending plan change card */}
+            {student.pendingPlanChange && student.subscription && (
+              <Card className="border-primary-300 bg-primary-50/50">
+                <div className="flex items-center gap-2 mb-3">
+                  <CreditCard className="w-4 h-4 text-primary-600" />
+                  <span className="font-semibold text-gray-900">플랜 변경 대기</span>
+                  <Badge variant="active">대기중</Badge>
+                </div>
+                <div className="text-sm space-y-1.5 mb-3">
+                  <div className="flex justify-between text-gray-600">
+                    <span>이전 플랜</span>
+                    <span>주 {student.pendingPlanChange.previousDaysPerWeek}회 · {formatCurrency(student.pendingPlanChange.previousMonthlyFee)}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-600">
+                    <span>새 플랜</span>
+                    <span>주 {student.subscription.daysPerWeek}회 · {formatCurrency(student.subscription.monthlyFee)}</span>
+                  </div>
+                  <div className="border-t border-primary-200 my-2" />
+                  <div className="flex justify-between font-bold text-gray-900">
+                    <span>{student.pendingPlanChange.isCredit ? "환불 추천액" : "추천 결제액"}</span>
+                    <span className={student.pendingPlanChange.isCredit ? "text-green-600" : "text-amber-600"}>
+                      {student.pendingPlanChange.isCredit ? "-" : ""}{formatCurrency(student.pendingPlanChange.recommendedAmount)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => cancelPlanChangeMutation.mutate()}
+                    loading={cancelPlanChangeMutation.isPending}
+                  >
+                    취소
+                  </Button>
+                  {student.pendingPlanChange.isCredit ? (
+                    <Button
+                      size="sm"
+                      onClick={() => confirmCreditMutation.mutate()}
+                      loading={confirmCreditMutation.isPending}
+                    >
+                      환불 확인
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setPaymentAmount(String(student.pendingPlanChange!.recommendedAmount));
+                        setShowPaymentModal(true);
+                      }}
+                    >
+                      결제하기
+                    </Button>
+                  )}
+                </div>
+              </Card>
             )}
-            {/* Unpaid card in payment tab */}
-            {(balanceInfo.paymentState === "NEEDS_PAYMENT" || balanceInfo.paymentState === "NEW") && student.subscription && (
+
+            {/* Unpaid card */}
+            {!student.pendingPlanChange && (balanceInfo.paymentState === "NEEDS_PAYMENT" || balanceInfo.paymentState === "NEW") && student.subscription && (
               <Card className="border-amber-300 bg-amber-50/50">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <AlertTriangle className="w-4 h-4 text-amber-600" />
@@ -802,11 +816,10 @@ export default function StudentDetailPage({
                       <Badge variant="overdue">미결제</Badge>
                     </div>
                     <p className="text-sm text-gray-500">
-                      잔여 {balanceInfo.balance}회 · {formatCurrency(student.subscription.monthlyFee)} · {student.subscription.daysPerWeek * 4}회
+                      잔여 {remaining}회 · {formatCurrency(student.subscription.monthlyFee)} · {student.subscription.daysPerWeek * 4}회
                     </p>
                   </div>
                   <Button size="sm" onClick={() => {
-                    setProcessingPaymentId(null);
                     setPaymentAmount(String(student.subscription!.monthlyFee));
                     setShowPaymentModal(true);
                   }}>
@@ -817,53 +830,36 @@ export default function StudentDetailPage({
             )}
 
             <Card padding={false}>
-              {credits.length === 0 ? (
+              {student.paymentSessions.length === 0 ? (
                 <p className="text-sm text-gray-500 text-center py-8">
                   결제 내역이 없습니다.
                 </p>
               ) : (
                 <div className="divide-y divide-gray-100">
-                  {[...credits].reverse().map((entry) => {
-                    const statusBdg = paymentStatusBadgeMap[entry.paymentStatus as PaymentStatus];
-                    const isPending = entry.paymentStatus === "PENDING";
-                    return (
-                      <div
-                        key={entry.id}
-                        className="flex items-center justify-between px-5 py-3"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-gray-900">
-                            {formatDateShort(entry.date)}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {formatCurrency(entry.amount ?? 0)}
-                            {entry.method && ` · ${paymentMethodLabel[entry.method as PaymentMethod]}`}
-                            {` · ${entry.sessionDelta > 0 ? "+" : ""}${entry.sessionDelta}회`}
-                          </div>
-                          {entry.note && (
-                            <div className="text-xs text-gray-400 mt-0.5 truncate">
-                              {entry.note}
-                            </div>
-                          )}
+                  {[...student.paymentSessions].reverse().map((session) => (
+                    <div
+                      key={session.id}
+                      className="flex items-center justify-between px-5 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-900">
+                          {formatDateShort(session.createdAt)}
                         </div>
-                        <div className="flex items-center gap-2">
-                          {isPending && (
-                            <Button
-                              size="sm"
-                              onClick={() => {
-                                setProcessingPaymentId(entry.id);
-                                setPaymentAmount(String(entry.amount ?? 0));
-                                setShowPaymentModal(true);
-                              }}
-                            >
-                              결제 처리
-                            </Button>
-                          )}
-                          {statusBdg && <Badge variant={statusBdg.variant}>{statusBdg.label}</Badge>}
+                        <div className="text-xs text-gray-500">
+                          {formatCurrency(session.amount)}
+                          {` · ${paymentMethodLabel[session.method]}`}
+                          {` · ${session.capacity}회`}
+                          {session.frozen && " · 종료"}
                         </div>
+                        {session.note && (
+                          <div className="text-xs text-gray-400 mt-0.5 truncate">
+                            {session.note}
+                          </div>
+                        )}
                       </div>
-                    );
-                  })}
+                      <Badge variant="paid">완납</Badge>
+                    </div>
+                  ))}
                 </div>
               )}
             </Card>
@@ -873,27 +869,50 @@ export default function StudentDetailPage({
         {/* Subscription Tab */}
         {activeTab === "subscription" && (
           <div className="space-y-4">
+            {student.pendingPlanChange && (
+              <div className="rounded-xl border-2 border-primary-300 bg-primary-50 p-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <AlertTriangle className="w-4 h-4 text-primary-600" />
+                  <span className="text-sm font-semibold text-primary-800">플랜 변경 대기 중</span>
+                </div>
+                <p className="text-sm text-primary-700">
+                  결제 탭에서 플랜 변경을 완료하거나 취소해주세요.
+                </p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => setActiveTab("payments")}
+                >
+                  결제 탭으로 이동
+                </Button>
+              </div>
+            )}
             {student.subscription ? (
               <>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-2">
                   {plans.map((plan) => {
                     const isCurrent = plan.daysPerWeek === student.subscription!.daysPerWeek;
                     const isSelected = selectedPlan === plan.daysPerWeek;
                     const isActive = isSelected || (!selectedPlan && isCurrent);
+                    const hasPending = !!student.pendingPlanChange;
                     return (
                       <button
                         key={plan.daysPerWeek}
                         type="button"
+                        disabled={hasPending}
                         onClick={() => {
+                          if (hasPending) return;
                           if (isCurrent) setSelectedPlan(null);
                           else setSelectedPlan(plan.daysPerWeek);
                         }}
                         className={cn(
                           "relative flex flex-col items-center gap-1 py-4 px-2 rounded-xl border-2 transition-colors",
-                          isActive
-                            ? "border-primary-500 bg-primary-50"
-                            : "border-gray-200 hover:border-gray-300",
-                          false
+                          hasPending
+                            ? "border-gray-200 bg-gray-100 opacity-50 cursor-not-allowed"
+                            : isActive
+                              ? "border-primary-500 bg-primary-50"
+                              : "border-gray-200 hover:border-gray-300",
                         )}
                       >
                         {isCurrent && (
@@ -938,46 +957,26 @@ export default function StudentDetailPage({
                   <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-4">
                     <div className="flex items-center gap-2 mb-3">
                       <AlertTriangle className="w-4 h-4 text-amber-600" />
-                      <span className="text-sm font-semibold text-amber-800">플랜 변경 차액</span>
+                      <span className="text-sm font-semibold text-amber-800">플랜 변경 추천 금액</span>
                     </div>
                     <div className="space-y-1.5 text-sm">
-                      {planPreview.remainingBalance === 0 ? (
-                        <>
-                          <div className="flex justify-between text-gray-600">
-                            <span>현재 사이클</span>
-                            <span>모든 세션 사용 완료</span>
-                          </div>
-                          <div className="flex justify-between text-gray-600">
-                            <span>새 플랜 수강료</span>
-                            <span>{formatCurrency(planPreview.newPlan.monthlyFee)}</span>
-                          </div>
-                          <div className="border-t border-amber-300 my-2" />
-                          <div className="flex justify-between font-bold text-amber-900">
-                            <span>납부액</span>
-                            <span>{formatCurrency(planPreview.proratedAmount)}</span>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex justify-between text-gray-600">
-                            <span>현재 사이클 사용</span>
-                            <span>{planPreview.usedSessions}/{planPreview.currentPlan.totalSessions}회 × {formatCurrency(planPreview.unitPrice)}</span>
-                          </div>
-                          <div className="flex justify-between text-gray-600">
-                            <span>{planPreview.remainingBalance < 0 ? "미결제 초과분" : "잔여 금액"}</span>
-                            <span>{planPreview.remainingBalance < 0 ? `+${formatCurrency(Math.abs(planPreview.remainingBalance))}` : formatCurrency(planPreview.remainingBalance)}</span>
-                          </div>
-                          <div className="flex justify-between text-gray-600">
-                            <span>새 플랜 수강료</span>
-                            <span>{formatCurrency(planPreview.newPlan.monthlyFee)}</span>
-                          </div>
-                          <div className="border-t border-amber-300 my-2" />
-                          <div className="flex justify-between font-bold text-amber-900">
-                            <span>{planPreview.isCredit ? "환불 금액" : "추가 납부액"}</span>
-                            <span>{planPreview.isCredit ? "-" : ""}{formatCurrency(planPreview.proratedAmount)}</span>
-                          </div>
-                        </>
-                      )}
+                      <div className="flex justify-between text-gray-600">
+                        <span>현재 사이클 사용</span>
+                        <span>{planPreview.usedSessions}/{planPreview.currentPlan.totalSessions}회</span>
+                      </div>
+                      <div className="flex justify-between text-gray-600">
+                        <span>미사용분 크레딧</span>
+                        <span>{formatCurrency(planPreview.unusedCredit)}</span>
+                      </div>
+                      <div className="flex justify-between text-gray-600">
+                        <span>새 플랜 수강료</span>
+                        <span>{formatCurrency(planPreview.newPlan.monthlyFee)}</span>
+                      </div>
+                      <div className="border-t border-amber-300 my-2" />
+                      <div className="flex justify-between font-bold text-amber-900">
+                        <span>{planPreview.isCredit ? "환불 추천액" : "추천 결제액"}</span>
+                        <span>{planPreview.isCredit ? "-" : ""}{formatCurrency(planPreview.recommendedAmount)}</span>
+                      </div>
                     </div>
                     <div className="flex justify-end gap-2 mt-3">
                       <Button variant="secondary" size="sm" onClick={() => setSelectedPlan(null)}>취소</Button>
@@ -1001,7 +1000,7 @@ export default function StudentDetailPage({
                       <span className="text-sm text-gray-500">회차 사용 현황</span>
                       {hasCurrentPayment ? (
                         <span className="text-sm font-semibold text-gray-900">
-                          {usedSessions} / {totalPerCycle}회
+                          {currentSessionUsed} / {currentSessionTotal}회
                         </span>
                       ) : (
                         <Badge variant="overdue">결제 필요</Badge>
@@ -1016,8 +1015,8 @@ export default function StudentDetailPage({
                           />
                         </div>
                         <div className="flex justify-between text-xs text-gray-500">
-                          <span>사용 {usedSessions}회</span>
-                          <span>잔여 {remainingClasses}회</span>
+                          <span>사용 {currentSessionUsed}회</span>
+                          <span>잔여 {currentSessionRemaining}회</span>
                         </div>
                       </>
                     ) : (
@@ -1029,17 +1028,15 @@ export default function StudentDetailPage({
                 </Card>
 
                 <Card>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <div className="text-sm text-gray-500">수강 요일</div>
+                      <div className="text-sm text-gray-500">수강 스케줄</div>
                       <div className="font-medium text-gray-900">
-                        {student.subscription.scheduleDays.map((d) => DAY_LABELS[d] || d).join(", ")}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-sm text-gray-500">수업 시간</div>
-                      <div className="font-medium text-gray-900">
-                        {student.subscription.scheduleTime ? `오후 ${parseInt(student.subscription.scheduleTime) - 12}시` : "-"}
+                        {student.subscription.schedule.map((s) => {
+                          const dayLabel = DAY_LABELS[s.day] || s.day;
+                          const hour = parseInt(s.time) - 12;
+                          return `${dayLabel} ${hour}시`;
+                        }).join(", ")}
                       </div>
                     </div>
                     <div>
@@ -1156,11 +1153,11 @@ export default function StudentDetailPage({
       {/* Payment Modal */}
       <Modal
         isOpen={showPaymentModal}
-        onClose={() => { setShowPaymentModal(false); setProcessingPaymentId(null); }}
+        onClose={() => setShowPaymentModal(false)}
         title="결제 처리"
         footer={
           <>
-            <Button variant="secondary" onClick={() => { setShowPaymentModal(false); setProcessingPaymentId(null); }}>취소</Button>
+            <Button variant="secondary" onClick={() => setShowPaymentModal(false)}>취소</Button>
             <Button onClick={() => paymentMutation.mutate()} loading={paymentMutation.isPending} disabled={!paymentAmount}>결제 처리</Button>
           </>
         }
@@ -1205,15 +1202,19 @@ export default function StudentDetailPage({
                 <span className="text-gray-600">현재 사이클 사용</span>
                 <span className="font-medium">{planPreview.usedSessions}/{planPreview.currentPlan.totalSessions}회</span>
               </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">미사용분 크레딧</span>
+                <span className="font-medium">{formatCurrency(planPreview.unusedCredit)}</span>
+              </div>
               <div className="flex justify-between font-semibold pt-1 border-t border-gray-200 mt-1">
-                <span>{planPreview.isCredit ? "환불 금액" : "추가 납부액"}</span>
+                <span>{planPreview.isCredit ? "환불 추천액" : "추천 결제액"}</span>
                 <span className={planPreview.isCredit ? "text-green-600" : "text-amber-600"}>
-                  {planPreview.isCredit ? "-" : "+"}{formatCurrency(planPreview.proratedAmount)}
+                  {planPreview.isCredit ? "-" : ""}{formatCurrency(planPreview.recommendedAmount)}
                 </span>
               </div>
             </div>
             <p className="text-xs text-gray-500">
-              변경 확인 시 결제 내역에 자동으로 기록됩니다.
+              현재 세션이 종료되고 새 플랜이 적용됩니다. 별도 결제가 필요합니다.
             </p>
           </div>
         )}

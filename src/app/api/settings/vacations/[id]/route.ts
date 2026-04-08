@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { updateVacationPeriod, deleteVacationPeriod } from "@/lib/mock-data";
+import { updateVacationPeriod, deleteVacationPeriod } from "@/lib/db";
 
 export async function PUT(
   request: NextRequest,
@@ -21,7 +21,7 @@ export async function PUT(
       );
     }
 
-    const updated = updateVacationPeriod(id, { name, startDate, endDate });
+    const updated = await updateVacationPeriod(id, { name, startDate, endDate });
     if (!updated) {
       return NextResponse.json(
         { error: "해당 방학 기간을 찾을 수 없습니다." },
@@ -40,7 +40,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const deleted = deleteVacationPeriod(id);
+  const deleted = await deleteVacationPeriod(id);
   if (!deleted) {
     return NextResponse.json(
       { error: "해당 방학 기간을 찾을 수 없습니다." },

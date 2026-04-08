@@ -65,7 +65,7 @@ export function Modal({
             <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
             <button
               onClick={onClose}
-              className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+              className="p-2 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
@@ -73,7 +73,7 @@ export function Modal({
         )}
         <div className="px-5 py-4">{children}</div>
         {footer && (
-          <div className="px-5 py-4 border-t border-gray-200 flex justify-end gap-2">
+          <div className="px-5 py-4 border-t border-gray-200 flex flex-wrap justify-end gap-2">
             {footer}
           </div>
         )}

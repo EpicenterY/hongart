@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPlans, updatePlan } from "@/lib/mock-data";
+import { getPlans, updatePlan } from "@/lib/db";
 
 export async function GET() {
-  return NextResponse.json(getPlans());
+  return NextResponse.json(await getPlans());
 }
 
 export async function PUT(request: NextRequest) {
@@ -20,7 +20,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const updated = updatePlan(daysPerWeek, monthlyFee);
+    const updated = await updatePlan(daysPerWeek, monthlyFee);
     if (!updated) {
       return NextResponse.json(
         { error: "해당 플랜을 찾을 수 없습니다." },

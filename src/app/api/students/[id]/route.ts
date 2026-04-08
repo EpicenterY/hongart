@@ -4,7 +4,8 @@ import {
   updateStudent,
   deleteStudent,
   getBalanceInfo,
-} from "@/lib/mock-data";
+  getPendingPlanChangeByStudentId,
+} from "@/lib/db";
 
 export async function GET(
   _request: NextRequest,
@@ -12,13 +13,14 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const student = getStudentById(id);
+  const student = await getStudentById(id);
   if (!student) {
     return NextResponse.json({ error: "학생을 찾을 수 없습니다." }, { status: 404 });
   }
 
-  const balanceInfo = getBalanceInfo(id);
-  return NextResponse.json({ ...student, balanceInfo });
+  const balanceInfo = await getBalanceInfo(id);
+  const pendingPlanChange = await getPendingPlanChangeByStudentId(id);
+  return NextResponse.json({ ...student, balanceInfo, pendingPlanChange });
 }
 
 export async function PUT(
@@ -29,7 +31,7 @@ export async function PUT(
 
   try {
     const body = await request.json();
-    const updated = updateStudent(id, body);
+    const updated = await updateStudent(id, body);
 
     if (!updated) {
       return NextResponse.json({ error: "학생을 찾을 수 없습니다." }, { status: 404 });
@@ -46,7 +48,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const success = deleteStudent(id);
+  const success = await deleteStudent(id);
 
   if (!success) {
     return NextResponse.json({ error: "학생을 찾을 수 없습니다." }, { status: 404 });

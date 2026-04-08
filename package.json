@@ -6,9 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "import-sheets": "npx tsx scripts/import-sheets.ts"
+  },
+  "prisma": {
+    "seed": "npx tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/utilities": "^3.2.2",
     "@prisma/client": "^6.19.3",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.101.1",

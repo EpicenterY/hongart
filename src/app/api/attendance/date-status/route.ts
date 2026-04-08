@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDateStatus } from "@/lib/mock-data";
+import { getDateStatus } from "@/lib/db";
 import { ensureHolidaysLoaded } from "@/lib/holidays";
 
 export async function GET(request: NextRequest) {
@@ -14,5 +14,5 @@ export async function GET(request: NextRequest) {
   }
 
   await ensureHolidaysLoaded();
-  return NextResponse.json(getDateStatus(dateStr));
+  return NextResponse.json(await getDateStatus(dateStr));
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getTotalUnpaidCount } from "@/lib/mock-data";
+import { getUnpaidCount } from "@/lib/db";
 
 export async function GET() {
-  return NextResponse.json({ count: getTotalUnpaidCount() });
+  return NextResponse.json({ count: await getUnpaidCount() });
 }

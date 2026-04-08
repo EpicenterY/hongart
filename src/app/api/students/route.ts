@@ -5,9 +5,8 @@ import {
   createSubscription,
   getSubscriptionByStudentId,
   getBalanceInfo,
-  StudentStatus,
-  type StudentFilter,
-} from "@/lib/mock-data";
+} from "@/lib/db";
+import { StudentStatus, type StudentFilter } from "@/lib/types";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -20,26 +19,28 @@ export async function GET(request: NextRequest) {
     filter.status = status;
   }
 
-  const students = getStudents(filter);
+  const students = await getStudents(filter);
 
-  const studentsWithInfo = students.map((student) => {
-    const subscription = getSubscriptionByStudentId(student.id);
-    const balanceInfo = getBalanceInfo(student.id);
+  const studentsWithInfo = await Promise.all(
+    students.map(async (student) => {
+      const subscription = await getSubscriptionByStudentId(student.id);
+      const balanceInfo = await getBalanceInfo(student.id);
 
-    return {
-      ...student,
-      subscription: subscription
-        ? {
-            daysPerWeek: subscription.daysPerWeek,
-            scheduleDays: subscription.scheduleDays,
-            monthlyFee: subscription.monthlyFee,
-          }
-        : null,
-      remainingClasses: balanceInfo.paymentState === "OK" || balanceInfo.paymentState === "PENDING_CREDIT"
-        ? balanceInfo.currentCycleRemaining : null,
-      paymentState: balanceInfo.paymentState,
-    };
-  });
+      return {
+        ...student,
+        subscription: subscription
+          ? {
+              daysPerWeek: subscription.daysPerWeek,
+              schedule: subscription.schedule,
+              monthlyFee: subscription.monthlyFee,
+            }
+          : null,
+        remainingClasses: balanceInfo.paymentState === "OK"
+          ? balanceInfo.currentSessionRemaining : null,
+        paymentState: balanceInfo.paymentState,
+      };
+    })
+  );
 
   return NextResponse.json(studentsWithInfo);
 }
@@ -53,7 +54,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "이름은 필수입니다." }, { status: 400 });
     }
 
-    const student = createStudent({
+    const student = await createStudent({
       name,
       phone: phone || null,
       parentPhone: parentPhone || null,
@@ -65,11 +66,10 @@ export async function POST(request: NextRequest) {
 
     if (subscription) {
       const subStartDate = new Date(subscription.startDate + "T00:00:00+09:00");
-      createSubscription({
+      await createSubscription({
         studentId: student.id,
         daysPerWeek: subscription.daysPerWeek,
-        scheduleDays: subscription.scheduleDays,
-        scheduleTime: subscription.scheduleTime || "15:00",
+        schedule: subscription.schedule,
         startDate: subStartDate,
         endDate: null,
         monthlyFee: subscription.monthlyFee,

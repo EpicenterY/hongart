@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { updateLedgerEntry, AttendanceStatus } from "@/lib/mock-data";
+import { updateAttendance } from "@/lib/db";
+import { AttendanceStatus } from "@/lib/types";
 
 export async function PUT(
   request: NextRequest,
@@ -18,7 +19,7 @@ export async function PUT(
       );
     }
 
-    const updated = updateLedgerEntry(id, { attendanceStatus: status });
+    const updated = await updateAttendance(id, { status });
 
     if (!updated) {
       return NextResponse.json(

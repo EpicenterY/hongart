@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-
-const VALID_PIN = "092200";
+import { getPin } from "@/lib/db";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { pin } = body as { pin: string };
 
-    if (pin !== VALID_PIN) {
+    const validPin = await getPin();
+    if (pin !== validPin) {
       return NextResponse.json(
         { success: false, error: "PIN이 올바르지 않습니다" },
         { status: 401 }
