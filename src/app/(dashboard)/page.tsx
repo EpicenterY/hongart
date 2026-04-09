@@ -4,12 +4,13 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DndContext, DragOverlay, MouseSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from "@dnd-kit/core";
-import { Clock, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { Clock, ChevronLeft, ChevronRight, Search, X, Plus } from "lucide-react";
 import { Card, Badge, EmptyState, Tabs, Modal, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { DraggableChip } from "@/components/schedule/DraggableChip";
 import { DroppableCell } from "@/components/schedule/DroppableCell";
 import { SchedulePopover } from "@/components/schedule/SchedulePopover";
+import { MakeupPicker } from "@/components/schedule/MakeupPicker";
 
 interface ScheduleSlot { day: string; time: string; }
 
@@ -39,6 +40,7 @@ interface AttendanceInfo {
   note: string | null;
   scheduleTime?: string | null;
   studentName?: string;
+  studentId?: string;
 }
 
 interface ScheduleOverrideInfo {
@@ -83,6 +85,7 @@ const ATTENDANCE_STYLES: Record<string, { bg: string; label: string }> = {
   PRESENT: { bg: "bg-green-100 text-green-800 border-green-300", label: "출석" },
   ABSENT: { bg: "bg-red-100 text-red-800 border-red-300", label: "결석" },
   LATE: { bg: "bg-yellow-100 text-yellow-800 border-yellow-300", label: "지각" },
+  MAKEUP: { bg: "bg-purple-100 text-purple-800 border-purple-300", label: "보강" },
 };
 
 const ATTENDANCE_BUTTONS = [
@@ -221,6 +224,14 @@ export default function SchedulePage() {
     anchorRect: { top: number; left: number; width: number; height: number };
   } | null>(null);
 
+  // ─── Makeup picker state ─────────────────────────
+  const [makeupPicker, setMakeupPicker] = useState<{
+    dateStr: string;
+    timeSlot: string;
+    existingStudentIds: string[];
+    anchorRect: { top: number; left: number };
+  } | null>(null);
+
   const isThisWeek = getMonday(today).getTime() === weekMonday.getTime();
 
   function getWeekDate(dayIdx: number): Date {
@@ -312,25 +323,21 @@ export default function SchedulePage() {
   const { data: weekAttendance } = useQuery<Record<string, Record<string, AttendanceInfo>>>({
     queryKey: ["weekAttendance", weekMonday.toISOString()],
     queryFn: async () => {
-      const dates = Object.values(weekDatesMap);
-      const results = await Promise.all(
-        dates.map(async (date) => {
-          const res = await fetch(`/api/attendance?date=${date}`);
-          if (!res.ok) return { date, entries: [] as AttendanceEntry[] };
-          const data = await res.json();
-          return { date, entries: (data.entries ?? []) as AttendanceEntry[] };
-        })
-      );
+      const mondayStr = toDateStr(weekMonday.getFullYear(), weekMonday.getMonth(), weekMonday.getDate());
+      const res = await fetch(`/api/attendance/week?startDate=${mondayStr}`);
+      if (!res.ok) throw new Error("Failed to fetch");
+      const data: Record<string, { entries: AttendanceEntry[] }> = await res.json();
       const map: Record<string, Record<string, AttendanceInfo>> = {};
-      for (const r of results) {
-        map[r.date] = {};
-        for (const e of r.entries) {
+      for (const [date, { entries }] of Object.entries(data)) {
+        map[date] = {};
+        for (const e of entries) {
           if (e.attendance) {
             const key = `${e.studentId}_${e.scheduleTime}`;
-            map[r.date][key] = {
+            map[date][key] = {
               ...e.attendance,
               scheduleTime: e.scheduleTime ?? null,
               studentName: e.studentName,
+              studentId: e.studentId,
             };
           }
         }
@@ -339,6 +346,40 @@ export default function SchedulePage() {
     },
     enabled: view === "weekly",
   });
+
+  // Prefetch adjacent weeks for faster navigation
+  useEffect(() => {
+    if (view !== "weekly") return;
+    for (const offset of [-1, 1]) {
+      const adjMonday = addWeeks(weekMonday, offset);
+      const adjStr = toDateStr(adjMonday.getFullYear(), adjMonday.getMonth(), adjMonday.getDate());
+      queryClient.prefetchQuery({
+        queryKey: ["weekAttendance", adjMonday.toISOString()],
+        queryFn: async () => {
+          const res = await fetch(`/api/attendance/week?startDate=${adjStr}`);
+          if (!res.ok) throw new Error("Failed to fetch");
+          const data: Record<string, { entries: AttendanceEntry[] }> = await res.json();
+          const map: Record<string, Record<string, AttendanceInfo>> = {};
+          for (const [date, { entries }] of Object.entries(data)) {
+            map[date] = {};
+            for (const e of entries) {
+              if (e.attendance) {
+                const key = `${e.studentId}_${e.scheduleTime}`;
+                map[date][key] = {
+                  ...e.attendance,
+                  scheduleTime: e.scheduleTime ?? null,
+                  studentName: e.studentName,
+                  studentId: e.studentId,
+                };
+              }
+            }
+          }
+          return map;
+        },
+        staleTime: 30_000,
+      });
+    }
+  }, [view, weekMonday, queryClient]);
 
   // ─── Schedule mutations ────────────────────────────
   const [scheduleError, setScheduleError] = useState<string | null>(null);
@@ -382,63 +423,116 @@ export default function SchedulePage() {
       }
       return res.json();
     },
-    onSuccess: () => {
+    onMutate: async ({ studentId, originalDate, newDate, newTime }) => {
+      setDndConfirm(null);
+      setScheduleError(null);
+      await queryClient.cancelQueries({ queryKey: ["weekOverrides"] });
+      const prevOverrides = queryClient.getQueryData<ScheduleOverrideInfo[]>(["weekOverrides", weekMonday.toISOString()]);
+      queryClient.setQueryData<ScheduleOverrideInfo[]>(["weekOverrides", weekMonday.toISOString()], (old) => {
+        const filtered = (old ?? []).filter(o => !(o.studentId === studentId && o.originalDate === originalDate));
+        return [...filtered, { id: "temp-" + Date.now(), studentId, originalDate, newDate, newTime }];
+      });
+      return { prevOverrides };
+    },
+    onError: (err: Error, _vars, context) => {
+      if (context?.prevOverrides) queryClient.setQueryData(["weekOverrides", weekMonday.toISOString()], context.prevOverrides);
+      setScheduleError(err.message);
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["schedule"] });
       queryClient.invalidateQueries({ queryKey: ["attendance"] });
       queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
       queryClient.invalidateQueries({ queryKey: ["weekOverrides"] });
-      setDndConfirm(null);
-      setScheduleError(null);
-    },
-    onError: (err: Error) => {
-      setScheduleError(err.message);
     },
   });
 
   // ─── Attendance mutation (unified for popover) ─────
   const attendanceMutation = useMutation({
-    mutationFn: async (payload: { studentId: string; date: string; status: string; timeSlot: string }) => {
+    mutationFn: async (payload: { studentId: string; date: string; status: string; timeSlot: string; studentName?: string }) => {
+      const { studentName: _name, ...body } = payload;
       const res = await fetch("/api/attendance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error("Failed");
       return res.json();
     },
-    onMutate: async ({ studentId, status, date, timeSlot }) => {
+    onMutate: async ({ studentId, status, date, timeSlot, studentName }) => {
+      setPopover(null);
       // Optimistic update for daily view
       if (view === "daily" && date === dailyDate) {
         await queryClient.cancelQueries({ queryKey: ["attendance", dailyDate] });
         const previous = queryClient.getQueryData<DailyAttendanceResponse>(["attendance", dailyDate]);
         queryClient.setQueryData<DailyAttendanceResponse>(["attendance", dailyDate], (old) => {
           if (!old) return old;
-          const COUNTED = ["PRESENT", "LATE"];
-          return {
-            ...old,
-            entries: old.entries.map((entry) => {
-              if (entry.studentId !== studentId || entry.scheduleTime !== timeSlot) return entry;
-              const wasCounted = entry.attendance ? COUNTED.includes(entry.attendance.status) : false;
-              const isCounted = COUNTED.includes(status);
-              const delta = (isCounted ? 1 : 0) - (wasCounted ? 1 : 0);
-              return {
-                ...entry,
-                attendance: { id: entry.attendance?.id || "temp", status, note: entry.attendance?.note || null },
-                usedSessions: entry.usedSessions !== null ? entry.usedSessions + delta : null,
-                remainingClasses: entry.remainingClasses !== null ? entry.remainingClasses - delta : null,
-              };
-            }),
-          };
+          const COUNTED = ["PRESENT", "LATE", "MAKEUP"];
+          const existing = old.entries.find(
+            (e) => e.studentId === studentId && e.scheduleTime === timeSlot
+          );
+          if (existing) {
+            return {
+              ...old,
+              entries: old.entries.map((entry) => {
+                if (entry.studentId !== studentId || entry.scheduleTime !== timeSlot) return entry;
+                const wasCounted = entry.attendance ? COUNTED.includes(entry.attendance.status) : false;
+                const isCounted = COUNTED.includes(status);
+                const delta = (isCounted ? 1 : 0) - (wasCounted ? 1 : 0);
+                return {
+                  ...entry,
+                  attendance: { id: entry.attendance?.id || "temp", status, note: entry.attendance?.note || null },
+                  usedSessions: entry.usedSessions !== null ? entry.usedSessions + delta : null,
+                  remainingClasses: entry.remainingClasses !== null ? entry.remainingClasses - delta : null,
+                };
+              }),
+            };
+          }
+          // New entry (makeup addition) — append to entries
+          if (studentName) {
+            return {
+              ...old,
+              entries: [...old.entries, {
+                studentId,
+                studentName,
+                scheduleTime: timeSlot,
+                attendance: { id: "temp", status, note: null },
+                totalSessions: null,
+                usedSessions: null,
+                remainingClasses: null,
+                paymentState: "OK",
+              }],
+            };
+          }
+          return old;
         });
         return { previous };
+      }
+      // Optimistic update for weekly view
+      if (view === "weekly") {
+        await queryClient.cancelQueries({ queryKey: ["weekAttendance"] });
+        const prevWeek = queryClient.getQueryData<Record<string, Record<string, AttendanceInfo>>>(["weekAttendance", weekMonday.toISOString()]);
+        queryClient.setQueryData<Record<string, Record<string, AttendanceInfo>>>(["weekAttendance", weekMonday.toISOString()], (old) => {
+          if (!old) return old;
+          const key = `${studentId}_${timeSlot}`;
+          const dateMap = { ...(old[date] || {}) };
+          dateMap[key] = {
+            id: dateMap[key]?.id || "temp",
+            status,
+            note: dateMap[key]?.note || null,
+            scheduleTime: timeSlot,
+            studentId,
+            studentName: dateMap[key]?.studentName || studentName,
+          };
+          return { ...old, [date]: dateMap };
+        });
+        return { prevWeek };
       }
     },
     onError: (_err, vars, context) => {
       if (context?.previous) queryClient.setQueryData(["attendance", vars.date], context.previous);
+      if (context?.prevWeek) queryClient.setQueryData(["weekAttendance", weekMonday.toISOString()], context.prevWeek);
     },
-    onSuccess: () => {
-      setPopover(null);
-    },
+    onSuccess: () => {},
     onSettled: (_data, _err, variables) => {
       queryClient.invalidateQueries({ queryKey: ["attendance"] });
       queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
@@ -446,6 +540,48 @@ export default function SchedulePage() {
       queryClient.invalidateQueries({ queryKey: ["student", variables.studentId] });
       queryClient.invalidateQueries({ queryKey: ["payments"] });
       queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
+    },
+  });
+
+  // ─── Cancel makeup mutation ─────────────────────────
+  const cancelMakeupMutation = useMutation({
+    mutationFn: async ({ attendanceId }: { attendanceId: string; studentId: string; dateStr: string; timeSlot: string }) => {
+      const res = await fetch(`/api/attendance?id=${attendanceId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+    onMutate: async ({ studentId, dateStr, timeSlot }) => {
+      setPopover(null);
+      // Optimistic: remove from daily view
+      if (view === "daily" && dateStr === dailyDate) {
+        await queryClient.cancelQueries({ queryKey: ["attendance", dailyDate] });
+        const previous = queryClient.getQueryData<DailyAttendanceResponse>(["attendance", dailyDate]);
+        queryClient.setQueryData<DailyAttendanceResponse>(["attendance", dailyDate], (old) => {
+          if (!old) return old;
+          return { ...old, entries: old.entries.filter((e) => !(e.studentId === studentId && e.scheduleTime === timeSlot && e.attendance?.status === "MAKEUP")) };
+        });
+        return { previous };
+      }
+      // Optimistic: remove from weekly view
+      if (view === "weekly") {
+        await queryClient.cancelQueries({ queryKey: ["weekAttendance"] });
+        const prevWeek = queryClient.getQueryData<Record<string, Record<string, AttendanceInfo>>>(["weekAttendance", weekMonday.toISOString()]);
+        queryClient.setQueryData<Record<string, Record<string, AttendanceInfo>>>(["weekAttendance", weekMonday.toISOString()], (old) => {
+          if (!old || !old[dateStr]) return old;
+          const dateMap = { ...old[dateStr] };
+          delete dateMap[`${studentId}_${timeSlot}`];
+          return { ...old, [dateStr]: dateMap };
+        });
+        return { prevWeek };
+      }
+    },
+    onError: (_err, vars, context) => {
+      if (context?.previous) queryClient.setQueryData(["attendance", vars.dateStr], context.previous);
+      if (context?.prevWeek) queryClient.setQueryData(["weekAttendance", weekMonday.toISOString()], context.prevWeek);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["attendance"] });
+      queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
     },
   });
 
@@ -459,6 +595,31 @@ export default function SchedulePage() {
     },
     enabled: view === "daily",
   });
+
+  // Prefetch adjacent dates for faster navigation
+  useEffect(() => {
+    if (view !== "daily") return;
+    const prev = addDaysDaily(dailyDate, -1);
+    const next = addDaysDaily(dailyDate, 1);
+    queryClient.prefetchQuery({
+      queryKey: ["attendance", prev],
+      queryFn: async () => {
+        const res = await fetch(`/api/attendance?date=${prev}`);
+        if (!res.ok) throw new Error("Failed to fetch");
+        return res.json();
+      },
+      staleTime: 30_000,
+    });
+    queryClient.prefetchQuery({
+      queryKey: ["attendance", next],
+      queryFn: async () => {
+        const res = await fetch(`/api/attendance?date=${next}`);
+        if (!res.ok) throw new Error("Failed to fetch");
+        return res.json();
+      },
+      staleTime: 30_000,
+    });
+  }, [view, dailyDate, queryClient]);
 
   const dailyEntries = dailyResponse?.entries ?? [];
   const dailyDateStatus = dailyResponse?.status ?? "normal";
@@ -612,12 +773,13 @@ export default function SchedulePage() {
 
     // Add attendance-only entries (students with attendance but no longer scheduled)
     if (weekAttendance?.[dateStr]) {
-      for (const [studentId, att] of Object.entries(weekAttendance[dateStr])) {
-        if (filtered.some(e => e.studentId === studentId)) continue;
+      for (const [, att] of Object.entries(weekAttendance[dateStr])) {
+        const realId = att.studentId;
+        if (!realId || filtered.some(e => e.studentId === realId)) continue;
         if (att.scheduleTime !== time) continue;
         filtered.push({
-          studentId,
-          studentName: att.studentName ?? studentId,
+          studentId: realId,
+          studentName: att.studentName ?? realId,
           schedule: [],
           daysPerWeek: 0,
           startDate: "1970-01-01",
@@ -799,12 +961,36 @@ export default function SchedulePage() {
     });
   }, [dndConfirm]);
 
-  // Compute popover attendance status dynamically
-  const popoverAttStatus = popover
+  // Compute popover attendance info dynamically
+  const popoverAttEntry = popover
     ? (view === "daily"
-      ? (dailyEntries.find(e => e.studentId === popover.studentId && e.scheduleTime === popover.timeSlot)?.attendance?.status ?? null)
-      : (weekAttendance?.[popover.dateStr]?.[`${popover.studentId}_${popover.timeSlot}`]?.status ?? null))
+      ? dailyEntries.find(e => e.studentId === popover.studentId && e.scheduleTime === popover.timeSlot)?.attendance
+      : weekAttendance?.[popover.dateStr]?.[`${popover.studentId}_${popover.timeSlot}`])
     : null;
+  const popoverAttStatus = popoverAttEntry?.status ?? null;
+
+  // ─── Makeup picker ────────────────────────────────
+  const openMakeupPicker = useCallback((e: React.MouseEvent, dateStr: string, timeSlot: string, existingStudentIds: string[]) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setMakeupPicker({
+      dateStr,
+      timeSlot,
+      existingStudentIds,
+      anchorRect: { top: rect.top, left: rect.left },
+    });
+  }, []);
+
+  const handleMakeupAdd = useCallback((studentId: string, studentName: string) => {
+    if (!makeupPicker) return;
+    attendanceMutation.mutate({
+      studentId,
+      date: makeupPicker.dateStr,
+      status: "MAKEUP",
+      timeSlot: makeupPicker.timeSlot,
+      studentName,
+    });
+    setMakeupPicker(null);
+  }, [makeupPicker, attendanceMutation]);
 
   // ─── Month navigation ──────────────────────────────
   function prevMonth() {
@@ -976,18 +1162,29 @@ export default function SchedulePage() {
                       {isCurrent && <span className="w-2 h-2 rounded-full bg-primary-500 animate-pulse" />}
                       <span className={cn("text-xs font-semibold", isCurrent ? "text-primary-700" : "text-gray-500")}>{label}</span>
                     </div>
-                    {students.length > 0 ? (
-                      <span className="text-xs text-gray-400">{students.length}명</span>
-                    ) : (
-                      <span className="text-xs text-gray-300">공강</span>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                      {students.length > 0 ? (
+                        <span className="text-xs text-gray-400">{students.length}명</span>
+                      ) : (
+                        <span className="text-xs text-gray-300">공강</span>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openMakeupPicker(e, dailyDate, time, students.map(s => s.studentId));
+                        }}
+                        className="w-5 h-5 flex items-center justify-center rounded-full hover:bg-purple-100 text-gray-400 hover:text-purple-600 transition-colors"
+                        title="보강 학생 추가"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                   {students.length > 0 && (
                     <div className="px-3 py-2 flex flex-col gap-1">
                       {students.map((entry) => {
                         const att = entry.attendance;
                         const style = att ? ATTENDANCE_STYLES[att.status] : null;
-                        const colorClass = dailyColorMap.get(entry.studentId) || "";
                         const remaining = entry.remainingClasses;
                         return (
                           <button
@@ -995,7 +1192,7 @@ export default function SchedulePage() {
                             onClick={(e) => openPopover(e, entry.studentId, dailyDate, entry.scheduleTime || "14:00")}
                             className={cn(
                               "text-xs font-medium px-3 py-2.5 rounded-md border transition-all w-full text-left",
-                              style ? style.bg : colorClass,
+                              style ? style.bg : "bg-white text-gray-700 border-gray-200",
                               popover?.studentId === entry.studentId && popover?.dateStr === dailyDate && popover?.timeSlot === (entry.scheduleTime || "14:00") && "ring-2 ring-primary-400",
                               highlightStudentId && highlightStudentId === entry.studentId && "ring-2 ring-primary-400",
                               highlightStudentId && highlightStudentId !== entry.studentId && "opacity-30",
@@ -1118,12 +1315,7 @@ export default function SchedulePage() {
                               className={cn(isOff && !isToday && "bg-gray-50/50")}
                             >
                               {students.map((s) => {
-                                // Only show attendance if chip is NOT from a different-date override
-                                const overrideForChip = weekOverrides.find(
-                                  o => o.studentId === s.studentId && o.newDate === dateStr && o.newTime === time
-                                );
-                                const isFromDifferentDate = overrideForChip && overrideForChip.originalDate !== dateStr;
-                                const att = isFromDifferentDate ? null : weekAttendance?.[dateStr]?.[`${s.studentId}_${time}`];
+                                const att = weekAttendance?.[dateStr]?.[`${s.studentId}_${time}`];
                                 const attStyle = att ? ATTENDANCE_STYLES[att.status] : null;
                                 const chipId = `${s.studentId}-${day}-${time}`;
                                 return (
@@ -1132,7 +1324,7 @@ export default function SchedulePage() {
                                     id={chipId}
                                     studentId={s.studentId}
                                     studentName={s.studentName}
-                                    colorClass={attStyle ? attStyle.bg : (studentColorMap.get(s.studentId) || STUDENT_COLORS[0])}
+                                    colorClass={attStyle ? attStyle.bg : "bg-white text-gray-700 border-gray-200"}
                                     day={day}
                                     time={time}
                                     onClick={(e) => openPopover(e, s.studentId, dateStr, time)}
@@ -1146,6 +1338,18 @@ export default function SchedulePage() {
                                   />
                                 );
                               })}
+                              {!isOff && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openMakeupPicker(e, dateStr, time, students.map(s => s.studentId));
+                                  }}
+                                  className="w-full flex items-center justify-center py-0.5 rounded hover:bg-purple-50 text-gray-300 hover:text-purple-500 transition-colors"
+                                  title="보강 학생 추가"
+                                >
+                                  <Plus className="h-3 w-3" />
+                                </button>
+                              )}
                             </DroppableCell>
                           );
                         })}
@@ -1213,7 +1417,7 @@ export default function SchedulePage() {
                                       onClick={(e) => openPopover(e, s.studentId, dateStr, time)}
                                       className={cn(
                                         "text-xs font-medium px-2.5 py-2 rounded-md border transition-all flex items-center gap-1",
-                                        style ? style.bg : studentColorMap.get(s.studentId),
+                                        style ? style.bg : "bg-white text-gray-700 border-gray-200",
                                         highlightStudentId && highlightStudentId === s.studentId && "ring-2 ring-primary-400",
                                         highlightStudentId && highlightStudentId !== s.studentId && "opacity-30",
                                       )}
@@ -1223,6 +1427,16 @@ export default function SchedulePage() {
                                     </button>
                                   );
                                 })}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openMakeupPicker(e, dateStr, time, entries.map(s => s.studentId));
+                                  }}
+                                  className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-purple-50 text-gray-300 hover:text-purple-500 transition-colors flex-shrink-0"
+                                  title="보강 학생 추가"
+                                >
+                                  <Plus className="h-3.5 w-3.5" />
+                                </button>
                               </div>
                             </div>
                           ))}
@@ -1386,6 +1600,26 @@ export default function SchedulePage() {
           onAttendance={(status) => {
             attendanceMutation.mutate({ studentId: popover.studentId, date: popover.dateStr, status, timeSlot: popover.timeSlot });
           }}
+          onCancelMakeup={popoverAttEntry?.id ? () => {
+            cancelMakeupMutation.mutate({
+              attendanceId: popoverAttEntry.id,
+              studentId: popover.studentId,
+              dateStr: popover.dateStr,
+              timeSlot: popover.timeSlot,
+            });
+          } : undefined}
+        />
+      )}
+
+      {/* ─── MakeupPicker ── */}
+      {makeupPicker && (
+        <MakeupPicker
+          dateStr={makeupPicker.dateStr}
+          timeSlot={makeupPicker.timeSlot}
+          existingStudentIds={makeupPicker.existingStudentIds}
+          onAdd={handleMakeupAdd}
+          onClose={() => setMakeupPicker(null)}
+          anchorRect={makeupPicker.anchorRect}
         />
       )}
 

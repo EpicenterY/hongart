@@ -539,6 +539,74 @@ export async function getBalanceInfo(studentId: string): Promise<BalanceInfo> {
   };
 }
 
+// ─── Batch Balance Info (for attendance API performance) ─
+
+export async function getBatchBalanceInfo(studentIds: string[]): Promise<Map<string, BalanceInfo>> {
+  if (studentIds.length === 0) return new Map();
+  const unique = [...new Set(studentIds)];
+
+  const [subs, sessions, records] = await Promise.all([
+    prisma.subscription.findMany({ where: { studentId: { in: unique }, isActive: true } }),
+    prisma.paymentSession.findMany({ where: { studentId: { in: unique } }, orderBy: { createdAt: "asc" } }),
+    prisma.attendance.findMany({ where: { studentId: { in: unique } }, orderBy: { date: "asc" } }),
+  ]);
+
+  const subMap = new Map(subs.map(s => [s.studentId, mapSubscription(s)]));
+  const sessMap = new Map<string, PaymentSession[]>();
+  for (const s of sessions) {
+    const mapped = mapPaymentSession(s);
+    if (!sessMap.has(s.studentId)) sessMap.set(s.studentId, []);
+    sessMap.get(s.studentId)!.push(mapped);
+  }
+  const recMap = new Map<string, AttendanceRecord[]>();
+  for (const r of records) {
+    const mapped = mapAttendance(r);
+    if (!recMap.has(r.studentId)) recMap.set(r.studentId, []);
+    recMap.get(r.studentId)!.push(mapped);
+  }
+
+  const result = new Map<string, BalanceInfo>();
+  for (const sid of unique) {
+    const sub = subMap.get(sid) ?? null;
+    const studentSessions = sessMap.get(sid) ?? [];
+    const studentRecords = recMap.get(sid) ?? [];
+    const filling = computeFilling(studentSessions, studentRecords);
+    const hasPaymentHistory = studentSessions.length > 0;
+
+    let paymentState: PaymentState;
+    if (!sub) paymentState = "NO_SUBSCRIPTION";
+    else if (!hasPaymentHistory) paymentState = "NEW";
+    else if (filling.remaining <= 0) paymentState = "NEEDS_PAYMENT";
+    else paymentState = "OK";
+
+    const currentSession = [...studentSessions]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .find((s) => !s.frozen) ?? studentSessions[studentSessions.length - 1] ?? null;
+
+    let currentSessionUsed = 0, currentSessionTotal = 0, currentSessionRemaining = 0;
+    if (currentSession) {
+      const fs = filling.filledSessions.find((f) => f.session.id === currentSession.id);
+      currentSessionUsed = fs?.filledCount ?? 0;
+      currentSessionTotal = currentSession.capacity;
+      currentSessionRemaining = Math.max(0, currentSessionTotal - currentSessionUsed);
+    }
+
+    result.set(sid, {
+      remaining: filling.remaining, totalCapacity: filling.totalCapacity,
+      totalConsuming: filling.totalConsuming, currentSessionUsed, currentSessionTotal,
+      currentSessionRemaining, paymentState, hasPaymentHistory,
+    });
+  }
+  return result;
+}
+
+// ─── Batch Subscriptions (for attendance API performance) ─
+
+export async function getActiveSubscriptions(): Promise<Map<string, Subscription>> {
+  const rows = await prisma.subscription.findMany({ where: { isActive: true } });
+  return new Map(rows.map(r => [r.studentId, mapSubscription(r)]));
+}
+
 // ─── Freeze & Proration ─────────────────────────────────
 
 export async function freezeCurrentSession(studentId: string): Promise<PaymentSession | null> {

@@ -17,6 +17,7 @@ interface SchedulePopoverProps {
   currentAttendanceStatus?: string | null;
   attendanceButtons?: AttendanceButton[];
   onAttendance?: (status: string) => void;
+  onCancelMakeup?: () => void;
 }
 
 export function SchedulePopover({
@@ -26,6 +27,7 @@ export function SchedulePopover({
   currentAttendanceStatus,
   attendanceButtons,
   onAttendance,
+  onCancelMakeup,
 }: SchedulePopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -61,7 +63,16 @@ export function SchedulePopover({
       className="fixed z-50 w-52 bg-white rounded-xl shadow-lg border border-gray-200 animate-in fade-in zoom-in-95 duration-150"
       style={{ top: `${top}px`, left: `${left}px` }}
     >
-      {attendanceButtons && onAttendance && (
+      {currentAttendanceStatus === "MAKEUP" && onCancelMakeup ? (
+        <div className="px-3 py-2.5">
+          <button
+            onClick={onCancelMakeup}
+            className="w-full py-2.5 rounded-lg text-xs font-bold transition-colors bg-purple-500 hover:bg-purple-600 text-white"
+          >
+            보강 취소
+          </button>
+        </div>
+      ) : attendanceButtons && onAttendance ? (
         <div className="px-3 py-2.5 flex gap-2">
           {attendanceButtons.map((btn) => {
             const isActive = currentAttendanceStatus === btn.status;
@@ -81,7 +92,7 @@ export function SchedulePopover({
             );
           })}
         </div>
-      )}
+      ) : null}
       <div className={cn("px-3 py-2", attendanceButtons && onAttendance && "border-t border-gray-100")}>
         <button
           onClick={onNavigate}

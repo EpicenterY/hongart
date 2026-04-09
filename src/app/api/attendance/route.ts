@@ -5,9 +5,11 @@ import {
   getAttendanceByDate,
   createAttendance,
   updateAttendance,
-  getBalanceInfo,
+  deleteAttendance,
   getDateStatus,
   getScheduleOverridesByDate,
+  getActiveSubscriptions,
+  getBatchBalanceInfo,
 } from "@/lib/db";
 import { StudentStatus, AttendanceStatus, getScheduleTime } from "@/lib/types";
 import { ensureHolidaysLoaded } from "@/lib/holidays";
@@ -17,6 +19,7 @@ const DAY_NAMES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const dateStr = searchParams.get("date") || new Date().toISOString().split("T")[0];
+  const minimal = searchParams.get("minimal") === "true";
 
   await ensureHolidaysLoaded();
 
@@ -36,9 +39,14 @@ export async function GET(request: NextRequest) {
   const dayOfWeek = targetDate.getDay();
   const dayName = DAY_NAMES[dayOfWeek];
 
-  const activeStudents = await getStudents({ status: StudentStatus.ACTIVE });
+  // Batch: get all active students + subscriptions + attendance in parallel
+  const [activeStudents, subsMap, overrides, existingRecords] = await Promise.all([
+    getStudents({ status: StudentStatus.ACTIVE }),
+    getActiveSubscriptions(),
+    getScheduleOverridesByDate(dateStr),
+    getAttendanceByDate(dateStr),
+  ]);
 
-  const overrides = await getScheduleOverridesByDate(dateStr);
   const removedByOverride = new Set(
     overrides.filter(o => o.originalDate === dateStr).map(o => o.studentId)
   );
@@ -61,7 +69,7 @@ export async function GET(request: NextRequest) {
       scheduledPairKeys.add(`${student.id}_${time}`);
       continue;
     }
-    const sub = await getSubscriptionByStudentId(student.id);
+    const sub = subsMap.get(student.id);
     if (!sub) continue;
     if (sub.startDate > targetDate) continue;
     const daySlots = sub.schedule.filter(s => s.day === dayName);
@@ -72,15 +80,13 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const existingRecords = await getAttendanceByDate(dateStr);
-
   // Extra entries: attendance records not in scheduled pairs
-  const allStudentsArr = await getStudents({});
+  const studentMap = new Map(activeStudents.map(s => [s.id, s]));
   const extraPairs: ScheduledPair[] = [];
   for (const r of existingRecords) {
     const key = `${r.studentId}_${r.timeSlot}`;
     if (!scheduledPairKeys.has(key)) {
-      const student = allStudentsArr.find(s => s.id === r.studentId);
+      const student = studentMap.get(r.studentId);
       if (student) {
         extraPairs.push({ student, timeSlot: r.timeSlot });
         scheduledPairKeys.add(key);
@@ -89,20 +95,12 @@ export async function GET(request: NextRequest) {
   }
   const allPairs = [...scheduledPairs, ...extraPairs];
 
-  // Cache balance info per student
-  const balanceCache = new Map<string, Awaited<ReturnType<typeof getBalanceInfo>>>();
-
-  const result = await Promise.all(
-    allPairs.map(async ({ student, timeSlot }) => {
+  // Minimal mode: skip balance info (for weekly view)
+  if (minimal) {
+    const result = allPairs.map(({ student, timeSlot }) => {
       const record = existingRecords.find(
         (r) => r.studentId === student.id && r.timeSlot === timeSlot
       );
-
-      if (!balanceCache.has(student.id)) {
-        balanceCache.set(student.id, await getBalanceInfo(student.id));
-      }
-      const balanceInfo = balanceCache.get(student.id)!;
-
       return {
         studentId: student.id,
         studentName: student.name,
@@ -110,14 +108,39 @@ export async function GET(request: NextRequest) {
         attendance: record
           ? { id: record.id, status: record.status, note: record.note }
           : null,
-        totalSessions: balanceInfo.currentSessionTotal,
-        usedSessions: balanceInfo.currentSessionUsed,
-        remainingClasses: balanceInfo.paymentState === "OK"
-          ? balanceInfo.currentSessionRemaining : null,
-        paymentState: balanceInfo.paymentState,
+        totalSessions: null,
+        usedSessions: null,
+        remainingClasses: null,
+        paymentState: "OK",
       };
-    })
-  );
+    });
+    return NextResponse.json({ status: "normal", entries: result });
+  }
+
+  // Batch: get balance info for all students at once (single DB round-trip)
+  const studentIds = [...new Set(allPairs.map(p => p.student.id))];
+  const balanceMap = await getBatchBalanceInfo(studentIds);
+
+  const result = allPairs.map(({ student, timeSlot }) => {
+    const record = existingRecords.find(
+      (r) => r.studentId === student.id && r.timeSlot === timeSlot
+    );
+    const balanceInfo = balanceMap.get(student.id);
+
+    return {
+      studentId: student.id,
+      studentName: student.name,
+      scheduleTime: timeSlot,
+      attendance: record
+        ? { id: record.id, status: record.status, note: record.note }
+        : null,
+      totalSessions: balanceInfo?.currentSessionTotal ?? null,
+      usedSessions: balanceInfo?.currentSessionUsed ?? null,
+      remainingClasses: balanceInfo?.paymentState === "OK"
+        ? balanceInfo.currentSessionRemaining : null,
+      paymentState: balanceInfo?.paymentState ?? "NO_SUBSCRIPTION",
+    };
+  });
 
   return NextResponse.json({ status: "normal", entries: result });
 }
@@ -161,7 +184,7 @@ export async function POST(request: NextRequest) {
     if (existing) {
       result = await updateAttendance(existing.id, {
         status,
-        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE
+        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE || status === AttendanceStatus.MAKEUP
           ? new Date()
           : null,
       });
@@ -171,7 +194,7 @@ export async function POST(request: NextRequest) {
         date: new Date(date + "T00:00:00Z"),
         timeSlot,
         status,
-        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE
+        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE || status === AttendanceStatus.MAKEUP
           ? new Date()
           : null,
         note: null,
@@ -183,4 +206,17 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "잘못된 요청입니다." }, { status: 400 });
   }
+}
+
+export async function DELETE(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const id = searchParams.get("id");
+  if (!id) {
+    return NextResponse.json({ error: "id는 필수입니다." }, { status: 400 });
+  }
+  const ok = await deleteAttendance(id);
+  if (!ok) {
+    return NextResponse.json({ error: "삭제 실패" }, { status: 404 });
+  }
+  return NextResponse.json({ success: true });
 }
