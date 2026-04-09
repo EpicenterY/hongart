@@ -175,6 +175,7 @@ async function main() {
 
   // Build attendance map with weekend conversion
   const attMap = new Map<string, { date: string; timeSlot: string }[]>();
+  const usedSlots = new Set<string>(); // track "sid_date_timeSlot" to detect collisions
   for (const [sid, date] of ATTENDANCE_RAW) {
     let d = date;
     let timeSlot: string;
@@ -192,6 +193,13 @@ async function main() {
         const day = String(dt.getDate()).padStart(2, "0");
         d = `${y}-${m}-${day}`;
         timeSlot = twoHourSlots[sid][1]; // weekend = 2nd hour
+        // If collision (Sun+Sat → same converted date), remap Sat to NEXT week
+        const key = `${sid}_${d}_${timeSlot}`;
+        if (usedSlots.has(key)) {
+          const dt2 = new Date(date + "T00:00:00");
+          dt2.setDate(dt2.getDate() + (targetDow + 1)); // Sat → next week's target day
+          d = `${dt2.getFullYear()}-${String(dt2.getMonth() + 1).padStart(2, "0")}-${String(dt2.getDate()).padStart(2, "0")}`;
+        }
       } else {
         timeSlot = twoHourSlots[sid][0]; // weekday = 1st hour
       }
@@ -200,6 +208,7 @@ async function main() {
       timeSlot = (schedMap.get(sid) ?? []).find(s => s.day === dayName)?.time ?? "14:00";
     }
 
+    usedSlots.add(`${sid}_${d}_${timeSlot}`);
     if (!attMap.has(sid)) attMap.set(sid, []);
     attMap.get(sid)!.push({ date: d, timeSlot });
   }
