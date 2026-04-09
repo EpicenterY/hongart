@@ -45,19 +45,32 @@ export default function StudentsPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [statusFilter, setStatusFilter] = useState<string>("ACTIVE");
 
-  const { data: students = [], isLoading } = useQuery<StudentListItem[]>({
-    queryKey: ["students", { search, status: statusFilter }],
+  // Fetch all students (no status filter) for client-side filtering + tab counts
+  const { data: allStudents = [], isLoading } = useQuery<StudentListItem[]>({
+    queryKey: ["students", { search }],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (search) params.set("search", search);
-      if (statusFilter !== "ALL") params.set("status", statusFilter);
       const res = await fetch(`/api/students?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch students");
       return res.json();
     },
   });
+
+  // Client-side status filtering
+  const students = statusFilter === "ALL"
+    ? allStudents
+    : allStudents.filter((s) => s.status === statusFilter);
+
+  // Tab counts
+  const statusCounts: Record<string, number> = {
+    ALL: allStudents.length,
+    ACTIVE: allStudents.filter((s) => s.status === "ACTIVE").length,
+    PAUSED: allStudents.filter((s) => s.status === "PAUSED").length,
+    WITHDRAWN: allStudents.filter((s) => s.status === "WITHDRAWN").length,
+  };
 
   const columns = [
     {
@@ -145,7 +158,7 @@ export default function StudentsPage() {
                   : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
               )}
             >
-              {tab.label}
+              {tab.label} ({statusCounts[tab.key] ?? 0})
             </button>
           ))}
         </div>

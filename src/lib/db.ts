@@ -1080,58 +1080,90 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   };
 }
 
-export async function getAnalyticsData(periodMonths: number = 3): Promise<AnalyticsData> {
+export async function getAnalyticsData(): Promise<AnalyticsData> {
   const now = new Date();
 
-  // Monthly trend
-  const monthlyTrend: { month: string; rate: number }[] = [];
-  for (let i = periodMonths - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const monthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const mStart = new Date(monthStr + "-01T00:00:00Z");
-    const mNext = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    const mEnd = new Date(toKSTDateStr(mNext) + "T00:00:00Z");
-
-    const monthRecords = await prisma.attendance.findMany({
-      where: { date: { gte: mStart, lt: mEnd } },
-    });
-    const att = monthRecords.filter((a) => a.status !== "ABSENT").length;
-    const rate = monthRecords.length > 0 ? Math.round((att / monthRecords.length) * 100) : 0;
-    monthlyTrend.push({ month: monthStr, rate });
+  function toMonthStr(d: Date): string {
+    const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+    return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, "0")}`;
   }
 
-  // Daily distribution
-  const allAttendance = await prisma.attendance.findMany({
-    where: { status: { not: "ABSENT" } },
-    select: { date: true },
-  });
+  // Fetch payment sessions + active subscriptions in parallel
+  const [sessions, subscriptions, activeStudents] = await Promise.all([
+    prisma.paymentSession.findMany({
+      select: { amount: true, createdAt: true, studentId: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.subscription.findMany({
+      where: { isActive: true },
+      select: { daysPerWeek: true },
+    }),
+    prisma.student.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true, name: true },
+    }),
+  ]);
 
-  const dayMap = ["일", "월", "화", "수", "목", "금", "토"];
-  const dayCounts: Record<string, number> = { "월": 0, "화": 0, "수": 0, "목": 0, "금": 0, "토": 0, "일": 0 };
-  for (const a of allAttendance) {
-    const dayName = dayMap[a.date.getDay()];
-    dayCounts[dayName]++;
+  // 1. Monthly revenue (결제 금액 월별 집계 + 매출 변동 추이)
+  const revenueByMonth = new Map<string, number>();
+  const studentsPerMonth = new Map<string, Set<string>>();
+  const firstPayment = new Map<string, Date>();
+
+  for (const s of sessions) {
+    const month = toMonthStr(s.createdAt);
+    // Revenue
+    if (s.amount > 0) {
+      revenueByMonth.set(month, (revenueByMonth.get(month) ?? 0) + s.amount);
+    }
+    // Student count per month (paying students only)
+    if (s.amount > 0) {
+      if (!studentsPerMonth.has(month)) studentsPerMonth.set(month, new Set());
+      studentsPerMonth.get(month)!.add(s.studentId);
+    }
+    // First payment per student
+    if (!firstPayment.has(s.studentId) || s.createdAt < firstPayment.get(s.studentId)!) {
+      firstPayment.set(s.studentId, s.createdAt);
+    }
   }
-  const dailyDistribution = ["월", "화", "수", "목", "금", "토", "일"].map(
-    (day) => ({ day, count: dayCounts[day] })
-  );
 
-  // Student ranking
-  const activeStudents = await prisma.student.findMany({
-    where: { status: "ACTIVE" },
-    include: { attendances: true },
-  });
+  const monthlyRevenue = [...revenueByMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, amount]) => ({ month, amount }));
 
-  const studentRanking = activeStudents
-    .map((s) => {
-      const presentCount = s.attendances.filter((a) => a.status !== "ABSENT").length;
-      const totalCount = s.attendances.length;
-      const rate = totalCount > 0 ? Math.round((presentCount / totalCount) * 100) : 0;
-      return { studentId: s.id, name: s.name, rate, presentCount, totalCount };
+  // 2. Student count trend (학생수 변동 추이)
+  const studentCountTrend = [...studentsPerMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, set]) => ({ month, count: set.size }));
+
+  // 3. Plan distribution (플랜별 비중)
+  const planCounts: Record<number, number> = {};
+  for (const sub of subscriptions) {
+    planCounts[sub.daysPerWeek] = (planCounts[sub.daysPerWeek] ?? 0) + 1;
+  }
+  const totalSubs = subscriptions.length;
+  const planDistribution = Object.entries(planCounts)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([dpw, count]) => ({
+      plan: `주 ${dpw}회`,
+      count,
+      percentage: totalSubs > 0 ? Math.round((count / totalSubs) * 100) : 0,
+    }));
+
+  // 4. Longest students ranking (장기 학생 랭킹 TOP 30)
+  const activeIdSet = new Set(activeStudents.map((s) => s.id));
+  const activeNameMap = new Map(activeStudents.map((s) => [s.id, s.name]));
+
+  const longestStudents = [...firstPayment.entries()]
+    .filter(([id]) => activeIdSet.has(id))
+    .map(([id, date]) => {
+      const diffMs = now.getTime() - date.getTime();
+      const months = Math.floor(diffMs / (30.44 * 24 * 60 * 60 * 1000));
+      return { name: activeNameMap.get(id)!, months, startDate: toMonthStr(date) };
     })
-    .sort((a, b) => b.rate - a.rate);
+    .sort((a, b) => b.months - a.months)
+    .slice(0, 30);
 
-  return { monthlyTrend, dailyDistribution, studentRanking };
+  return { monthlyRevenue, studentCountTrend, planDistribution, longestStudents };
 }
 
 // ─── PIN (AppSettings) ───────────────────────────────────
@@ -1149,3 +1181,167 @@ export async function updatePin(newPin: string): Promise<void> {
     update: { pin: newPin },
   });
 }
+
+// ─── Backup / Restore ───────────────────────────────────
+
+export async function exportAllData() {
+  const [
+    appSettings,
+    plans,
+    vacationPeriods,
+    publicHolidays,
+    students,
+    subscriptions,
+    paymentSessions,
+    attendance,
+    memos,
+    pendingPlanChanges,
+    scheduleOverrides,
+  ] = await Promise.all([
+    prisma.appSettings.findMany(),
+    prisma.plan.findMany(),
+    prisma.vacationPeriod.findMany(),
+    prisma.publicHoliday.findMany(),
+    prisma.student.findMany(),
+    prisma.subscription.findMany(),
+    prisma.paymentSession.findMany(),
+    prisma.attendance.findMany(),
+    prisma.memo.findMany(),
+    prisma.pendingPlanChange.findMany(),
+    prisma.scheduleOverride.findMany(),
+  ]);
+
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      appSettings,
+      plans,
+      vacationPeriods,
+      publicHolidays,
+      students,
+      subscriptions,
+      paymentSessions,
+      attendance,
+      memos,
+      pendingPlanChanges,
+      scheduleOverrides,
+    },
+  };
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export async function importAllData(backup: any) {
+  const d = backup.data;
+
+  // Helper: convert string dates back to Date objects
+  const toDate = (v: any) => (v ? new Date(v) : null);
+
+  await prisma.$transaction(async (tx) => {
+    // Delete in child → parent order (FK constraints)
+    await tx.scheduleOverride.deleteMany();
+    await tx.attendance.deleteMany();
+    await tx.memo.deleteMany();
+    await tx.pendingPlanChange.deleteMany();
+    await tx.paymentSession.deleteMany();
+    await tx.subscription.deleteMany();
+    await tx.student.deleteMany();
+    await tx.plan.deleteMany();
+    await tx.vacationPeriod.deleteMany();
+    await tx.publicHoliday.deleteMany();
+    await tx.appSettings.deleteMany();
+
+    // Insert in parent → child order
+    if (d.appSettings?.length) {
+      await tx.appSettings.createMany({ data: d.appSettings });
+    }
+    if (d.publicHolidays?.length) {
+      await tx.publicHoliday.createMany({ data: d.publicHolidays });
+    }
+    if (d.vacationPeriods?.length) {
+      await tx.vacationPeriod.createMany({ data: d.vacationPeriods });
+    }
+    if (d.plans?.length) {
+      await tx.plan.createMany({ data: d.plans });
+    }
+    if (d.students?.length) {
+      await tx.student.createMany({
+        data: d.students.map((s: any) => ({
+          ...s,
+          createdAt: toDate(s.createdAt),
+          updatedAt: toDate(s.updatedAt),
+        })),
+      });
+    }
+    if (d.subscriptions?.length) {
+      await tx.subscription.createMany({
+        data: d.subscriptions.map((s: any) => ({
+          ...s,
+          startDate: toDate(s.startDate),
+          endDate: toDate(s.endDate),
+          createdAt: toDate(s.createdAt),
+          updatedAt: toDate(s.updatedAt),
+        })),
+      });
+    }
+    if (d.paymentSessions?.length) {
+      await tx.paymentSession.createMany({
+        data: d.paymentSessions.map((s: any) => ({
+          ...s,
+          createdAt: toDate(s.createdAt),
+        })),
+      });
+    }
+    if (d.attendance?.length) {
+      await tx.attendance.createMany({
+        data: d.attendance.map((a: any) => ({
+          ...a,
+          date: toDate(a.date),
+          checkInAt: toDate(a.checkInAt),
+          createdAt: toDate(a.createdAt),
+          updatedAt: toDate(a.updatedAt),
+        })),
+      });
+    }
+    if (d.memos?.length) {
+      await tx.memo.createMany({
+        data: d.memos.map((m: any) => ({
+          ...m,
+          createdAt: toDate(m.createdAt),
+          updatedAt: toDate(m.updatedAt),
+        })),
+      });
+    }
+    if (d.pendingPlanChanges?.length) {
+      await tx.pendingPlanChange.createMany({
+        data: d.pendingPlanChanges.map((p: any) => ({
+          ...p,
+          createdAt: toDate(p.createdAt),
+        })),
+      });
+    }
+    if (d.scheduleOverrides?.length) {
+      await tx.scheduleOverride.createMany({
+        data: d.scheduleOverrides.map((o: any) => ({
+          ...o,
+          createdAt: toDate(o.createdAt),
+        })),
+      });
+    }
+  });
+
+  return {
+    students: d.students?.length ?? 0,
+    subscriptions: d.subscriptions?.length ?? 0,
+    paymentSessions: d.paymentSessions?.length ?? 0,
+    attendance: d.attendance?.length ?? 0,
+    memos: d.memos?.length ?? 0,
+    pendingPlanChanges: d.pendingPlanChanges?.length ?? 0,
+    scheduleOverrides: d.scheduleOverrides?.length ?? 0,
+    plans: d.plans?.length ?? 0,
+    vacationPeriods: d.vacationPeriods?.length ?? 0,
+    publicHolidays: d.publicHolidays?.length ?? 0,
+    appSettings: d.appSettings?.length ?? 0,
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */

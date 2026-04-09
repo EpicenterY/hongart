@@ -202,9 +202,10 @@ export interface DashboardStats {
 }
 
 export interface AnalyticsData {
-  monthlyTrend: { month: string; rate: number }[];
-  dailyDistribution: { day: string; count: number }[];
-  studentRanking: { studentId: string; name: string; rate: number; presentCount: number; totalCount: number }[];
+  monthlyRevenue: { month: string; amount: number }[];
+  studentCountTrend: { month: string; count: number }[];
+  planDistribution: { plan: string; count: number; percentage: number }[];
+  longestStudents: { name: string; months: number; startDate: string }[];
 }
 
 // ─── Pure Functions ──────────────────────────────────────

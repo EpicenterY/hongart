@@ -1,11 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getAnalyticsData } from "@/lib/db";
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const periodParam = searchParams.get("period") || "3m";
-  const periodMonths = periodParam === "1m" ? 1 : periodParam === "6m" ? 6 : 3;
-
-  const data = await getAnalyticsData(periodMonths);
+export async function GET() {
+  const data = await getAnalyticsData();
   return NextResponse.json(data);
 }

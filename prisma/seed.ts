@@ -1,68 +1,42 @@
 import { PrismaClient } from "@prisma/client";
-import { CARRY_OVER_RAW, PAYMENT_ROUNDS_RAW, ATTENDANCE_RAW } from "../src/lib/sheets-data";
+import { CARRY_OVER_RAW, PAYMENT_ROUNDS_RAW, ATTENDANCE_RAW, STUDENT_META_RAW } from "../src/lib/sheets-data";
 
 const prisma = new PrismaClient();
 
-// [id, name, daysPerWeek, parentPhone, childPhone|null, remaining]
-const STUDENT_RAW: [string, string, number, string, string | null, number][] = [
-  ["s01","서동준",1,"01041487832",null,-6],
-  ["s02","이윤서",1,"01040861253",null,-1],
-  ["s03","정윤영",1,"01055185087",null,1],
-  ["s04","최하연",2,"01024725454",null,6],
-  ["s05","나윤서",2,"01064797875",null,4],
-  ["s06","김리하",2,"01071473362",null,-6],
-  ["s07","하라윤",1,"01064329364",null,2],
-  ["s08","임정윤",3,"01050960118",null,6],
-  ["s09","김지유",2,"01083320164",null,2],
-  ["s10","최혜원",2,"01064811004","01064811074",0],
-  ["s11","류지아",2,"01095406102",null,5],
-  ["s12","문하윤",2,"01056185820",null,4],
-  ["s13","최은수",1,"01024725454",null,3],
-  ["s14","정예린",2,"01088332076",null,-3],
-  ["s15","고해서",2,"01062872975",null,-6],
-  ["s16","길민준",1,"01034213263","01056403263",0],
-  ["s17","강지윤",2,"01022188009",null,-1],
-  ["s18","이태율",2,"01054565852","01022475852",-2],
-  ["s19","조현래",1,"01066726082",null,2],
-  ["s20","송서율",2,"01077778070",null,-4],
-  ["s21","이수현",1,"01079361119",null,0],
-  ["s22","최은우",1,"01077631614",null,3],
-  ["s23","강하준",1,"01034570144",null,0],
-  ["s24","김주아",1,"01052057855",null,1],
-  ["s25","전수호",1,"01054727204",null,3],
-  ["s26","이나윤",1,"01079404723",null,-1],
-  ["s27","정원",1,"01099163871",null,0],
-  ["s28","홍채이",1,"01075539224",null,1],
-  ["s29","인하엘",1,"01047552994",null,0],
-  ["s30","임건우",1,"01048193537",null,-1],
-  ["s31","이하율",3,"01092737287",null,3],
-  ["s32","김지안",1,"01088398522",null,-1],
-  ["s33","현채은",2,"01076555051",null,8],
-  ["s34","송서연",1,"01090407504",null,-1],
-  ["s35","황찬",2,"01036238363",null,1],
-  ["s36","정다민",1,"01098909980",null,-2],
-  ["s37","임지안",1,"01073581105",null,-1],
-  ["s38","이루미",1,"01047376955",null,0],
-  ["s39","조혜준",1,"01072778685",null,0],
-  ["s40","김민겸",1,"01020573523",null,0],
-  ["s41","이로이",1,"01090987315",null,-4],
-  ["s42","박서은",1,"01042099669",null,3],
-  ["s43","정하윤",1,"01072023858",null,3],
-  ["s44","김건우",1,"01036598924",null,3],
-  ["s45","최은호",1,"01020360968",null,3],
-  ["s46","장승우",1,"01067104911",null,3],
-  ["s47","안제하",1,"01093575426",null,-1],
-  ["s48","정예나",1,"01076676249",null,-1],
-  ["s49","하예윤",1,"01064329364",null,3],
-  ["s50","이혜성",2,"01099842980",null,-2],
-  ["s51","김서진",1,"01088929048",null,0],
-  ["s52","유이도",2,"01022972680",null,2],
-  ["s53","유이르",2,"01022972680",null,2],
-  ["s54","펜더아린",1,"01098515008",null,3],
-];
+// Old student ID → name mapping (for SCHEDULE_RAW remapping from old 54-student IDs)
+const OLD_NAMES: Record<string, string> = {
+  s01:"서동준",s02:"이윤서",s03:"정윤영",s04:"최하연",s05:"나윤서",
+  s06:"김리하",s07:"하라윤",s08:"임정윤",s09:"김지유",s10:"최혜원",
+  s11:"류지아",s12:"문하윤",s13:"최은수",s14:"정예린",s15:"고해서",
+  s16:"길민준",s17:"강지윤",s18:"이태율",s19:"조현래",s20:"송서율",
+  s21:"이수현",s22:"최은우",s23:"강하준",s24:"김주아",s25:"전수호",
+  s26:"이나윤",s27:"정원",s28:"홍채이",s29:"인하엘",s30:"임건우",
+  s31:"이하율",s32:"김지안",s33:"현채은",s34:"송서연",s35:"황찬",
+  s36:"정다민",s37:"임지안",s38:"이루미",s39:"조혜준",s40:"김민겸",
+  s41:"이로이",s42:"박서은",s43:"정하윤",s44:"김건우",s45:"최은호",
+  s46:"장승우",s47:"안제하",s48:"정예나",s49:"하예윤",s50:"이혜성",
+  s51:"김서진",s52:"유이도",s53:"유이르",s54:"펜더아린",
+};
 
-// Schedule: [studentId, day, time]
-const SCHEDULE_RAW: [string, string, string][] = [
+// Build name → newSid mapping (prefer active students for duplicate names like 김서진)
+const nameToNewSid = new Map<string, string>();
+for (const [sid, , name, isActive] of STUDENT_META_RAW) {
+  if (!isActive) nameToNewSid.set(name, sid);
+}
+for (const [sid, , name, isActive] of STUDENT_META_RAW) {
+  if (isActive) nameToNewSid.set(name, sid);
+}
+
+function remapSid(oldSid: string): string {
+  const name = OLD_NAMES[oldSid];
+  if (!name) throw new Error(`Unknown old sid: ${oldSid}`);
+  const newSid = nameToNewSid.get(name);
+  if (!newSid) throw new Error(`Cannot remap ${oldSid} (${name}) — not found in STUDENT_META_RAW`);
+  return newSid;
+}
+
+// Schedule: [studentId, day, time] — old IDs, remapped below
+const SCHEDULE_RAW_OLD: [string, string, string][] = [
   ["s01","THU","14:00"],["s04","THU","14:00"],["s10","THU","15:00"],["s24","THU","15:00"],
   ["s47","THU","16:00"],["s48","THU","16:00"],["s49","THU","17:00"],["s51","THU","17:00"],
   ["s02","FRI","14:00"],["s03","FRI","14:00"],["s04","FRI","14:00"],
@@ -88,17 +62,24 @@ const SCHEDULE_RAW: [string, string, string][] = [
   ["s05","TUE","15:00"],["s06","MON","15:00"],["s09","WED","17:00"],["s12","MON","15:00"],
 ];
 
+// Remap schedule to new IDs
+const SCHEDULE_RAW: [string, string, string][] = SCHEDULE_RAW_OLD.map(
+  ([oldSid, day, time]) => [remapSid(oldSid), day, time]
+);
+
+// Weekend → weekday conversion for 2-hour consecutive students (remapped to new IDs)
+const OLD_WEEKEND: Record<string, number> = { s05: 2, s06: 1, s09: 3, s12: 1 };
+const weekendToWeekday: Record<string, number> = {};
+for (const [oldSid, dow] of Object.entries(OLD_WEEKEND)) {
+  weekendToWeekday[remapSid(oldSid)] = dow;
+}
+
 const MONTH_DATES = [
   "2025-04","2025-05","2025-06","2025-07","2025-08","2025-09",
   "2025-10","2025-11","2025-12","2026-01","2026-02","2026-03","2026-04",
 ];
 
 const feeMap: Record<number, number> = { 1: 100000, 2: 140000, 3: 170000 };
-
-// Weekend → weekday conversion for 2-hour consecutive students
-const weekendToWeekday: Record<string, number> = {
-  s05: 2, s06: 1, s09: 3, s12: 1,
-};
 
 async function main() {
   console.log("🌱 Seeding database...");
@@ -144,7 +125,7 @@ async function main() {
     },
   });
 
-  // Build schedule map
+  // Build schedule map (new IDs)
   const schedMap = new Map<string, { day: string; time: string }[]>();
   for (const [sid, day, time] of SCHEDULE_RAW) {
     if (!schedMap.has(sid)) schedMap.set(sid, []);
@@ -170,7 +151,9 @@ async function main() {
     const slots = (schedMap.get(sid) ?? [])
       .filter(s => s.day === dayName)
       .sort((a, b) => a.time.localeCompare(b.time));
-    twoHourSlots[sid] = [slots[0].time, slots[1].time];
+    if (slots.length >= 2) {
+      twoHourSlots[sid] = [slots[0].time, slots[1].time];
+    }
   }
 
   // Build attendance map with weekend conversion
@@ -180,7 +163,7 @@ async function main() {
     let d = date;
     let timeSlot: string;
 
-    if (sid in weekendToWeekday) {
+    if (sid in weekendToWeekday && sid in twoHourSlots) {
       const dt = new Date(date + "T00:00:00");
       const dow = dt.getDay();
       const isWeekend = dow === 0 || dow === 6;
@@ -213,33 +196,33 @@ async function main() {
     attMap.get(sid)!.push({ date: d, timeSlot });
   }
 
-  // Track old ID → new UUID mapping
+  // Track sid → DB UUID mapping
   const studentIdMap = new Map<string, string>();
 
-  // Create students (need individual creates for UUID mapping)
-  console.log(`Creating ${STUDENT_RAW.length} students...`);
-  for (const [id, name, , pp, cp] of STUDENT_RAW) {
+  // Create students (individual creates for UUID mapping)
+  console.log(`Creating ${STUDENT_META_RAW.length} students...`);
+  for (const [sid, , name, isActive, , pp, cp] of STUDENT_META_RAW) {
     const student = await prisma.student.create({
       data: {
         name,
-        phone: cp,
-        parentPhone: pp,
-        status: "ACTIVE",
+        phone: cp || null,
+        parentPhone: pp || null,
+        status: isActive ? "ACTIVE" : "WITHDRAWN",
         createdAt: new Date("2025-04-01"),
       },
     });
-    studentIdMap.set(id, student.id);
+    studentIdMap.set(sid, student.id);
   }
 
   // Create subscriptions (batch)
   console.log("Creating subscriptions...");
-  const subData = STUDENT_RAW.map(([id, , dpw]) => ({
-    studentId: studentIdMap.get(id)!,
+  const subData = STUDENT_META_RAW.map(([sid, , , isActive, dpw]) => ({
+    studentId: studentIdMap.get(sid)!,
     daysPerWeek: dpw,
-    schedule: (schedMap.get(id) ?? []) as unknown as object[],
+    schedule: (isActive ? (schedMap.get(sid) ?? []) : []) as unknown as object[],
     startDate: new Date("2025-04-01T00:00:00Z"),
     monthlyFee: feeMap[dpw] ?? 100000,
-    isActive: true,
+    isActive: isActive,
   }));
   await prisma.subscription.createMany({ data: subData });
 
@@ -252,9 +235,9 @@ async function main() {
   };
   const allSessions: PsData[] = [];
 
-  for (const [id] of STUDENT_RAW) {
-    const uuid = studentIdMap.get(id)!;
-    const carryOver = coMap.get(id) ?? 0;
+  for (const [sid] of STUDENT_META_RAW) {
+    const uuid = studentIdMap.get(sid)!;
+    const carryOver = coMap.get(sid) ?? 0;
 
     if (carryOver > 0) {
       allSessions.push({
@@ -265,7 +248,7 @@ async function main() {
     }
 
     const debt = carryOver < 0 ? Math.abs(carryOver) : 0;
-    const rounds = roundsMap.get(id) ?? [];
+    const rounds = roundsMap.get(sid) ?? [];
     for (let ri = 0; ri < rounds.length; ri++) {
       const [mi, cap] = rounds[ri];
       const adjustedCap = ri === 0 && debt > 0 ? cap - debt : cap;
@@ -295,9 +278,9 @@ async function main() {
   };
   const allAtt: AttData[] = [];
 
-  for (const [id] of STUDENT_RAW) {
-    const uuid = studentIdMap.get(id)!;
-    const records = attMap.get(id) ?? [];
+  for (const [sid] of STUDENT_META_RAW) {
+    const uuid = studentIdMap.get(sid)!;
+    const records = attMap.get(sid) ?? [];
     for (const { date: d, timeSlot } of records) {
       allAtt.push({
         studentId: uuid,
@@ -316,8 +299,9 @@ async function main() {
   }
   console.log(`Created ${allAtt.length} attendance records`);
 
+  const activeCount = STUDENT_META_RAW.filter(m => m[3]).length;
   console.log("✅ Seed complete!");
-  console.log(`  Students: ${STUDENT_RAW.length}`);
+  console.log(`  Students: ${STUDENT_META_RAW.length} (${activeCount} active, ${STUDENT_META_RAW.length - activeCount} inactive)`);
   console.log(`  Payment sessions: ${allSessions.length}`);
   console.log(`  Attendance records: ${allAtt.length}`);
 }

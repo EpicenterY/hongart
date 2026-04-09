@@ -1,20 +1,14 @@
-import { CARRY_OVER_RAW, PAYMENT_ROUNDS_RAW, ATTENDANCE_RAW } from "../src/lib/sheets-data";
+import { CARRY_OVER_RAW, PAYMENT_ROUNDS_RAW, ATTENDANCE_RAW, STUDENT_META_RAW } from "../src/lib/sheets-data";
 
 const SPREADSHEET_ID = "1f68PgFP5t4wZkrTg3cgB3HojNQKlHxKf8FlKSYwQFRc";
 
-const NAMES: Record<string, string> = {
-  s01:"서동준",s02:"이윤서",s03:"정윤영",s04:"최하연",s05:"나윤서",
-  s06:"김리하",s07:"하라윤",s08:"임정윤",s09:"김지유",s10:"최혜원",
-  s11:"류지아",s12:"문하윤",s13:"최은수",s14:"정예린",s15:"고해서",
-  s16:"길민준",s17:"강지윤",s18:"이태율",s19:"조현래",s20:"송서율",
-  s21:"이수현",s22:"최은우",s23:"강하준",s24:"김주아",s25:"전수호",
-  s26:"이나윤",s27:"정원",s28:"홍채이",s29:"인하엘",s30:"임건우",
-  s31:"이하율",s32:"김지안",s33:"현채은",s34:"송서연",s35:"황찬",
-  s36:"정다민",s37:"임지안",s38:"이루미",s39:"조혜준",s40:"김민겸",
-  s41:"이로이",s42:"박서은",s43:"정하윤",s44:"김건우",s45:"최은호",
-  s46:"장승우",s47:"안제하",s48:"정예나",s49:"하예윤",s50:"이혜성",
-  s51:"김서진",s52:"유이도",s53:"유이르",s54:"펜더아린",
-};
+// Build sid→name map from STUDENT_META_RAW (no hardcoded NAMES)
+const NAMES = new Map<string, string>();
+for (const [sid, , name] of STUDENT_META_RAW) NAMES.set(sid, name);
+
+// Build sheetNum→sid map for matching rows
+const numToSid = new Map<string, string>();
+for (const [sid, num] of STUDENT_META_RAW) numToSid.set(num, sid);
 
 // Compute seed remaining
 const coMap = new Map<string, number>();
@@ -28,7 +22,7 @@ const attCnt = new Map<string, number>();
 for (const [id] of ATTENDANCE_RAW) attCnt.set(id, (attCnt.get(id) ?? 0) + 1);
 
 const seedRem = new Map<string, number>();
-for (const sid of Object.keys(NAMES)) {
+for (const [sid] of STUDENT_META_RAW) {
   const co = coMap.get(sid) ?? 0;
   const caps = roundsCap.get(sid) ?? [];
   let total = co > 0 ? co : 0;
@@ -83,23 +77,28 @@ async function main() {
   console.log("----------|---------|---------|------");
 
   let mismatch = 0;
-  let studentIdx = 0;
+  let studentCount = 0;
   for (const row of dataRows) {
     const num = row[0]?.trim();
     if (!num || num === "") continue;
-    studentIdx++;
-    const sid = `s${String(studentIdx).padStart(2, "0")}`;
+
     const name = row[1]?.trim() ?? "";
+    if (!name) continue; // skip rows with no name
+
+    studentCount++;
+    const sid = numToSid.get(num);
+    if (!sid) { console.log(`⚠ Unknown sheet #${num}`); mismatch++; continue; }
+
     const sheetRem = parseInt(row[20]) || 0;
     const seed = seedRem.get(sid) ?? 0;
     const ok = sheetRem === seed;
     if (!ok) {
       mismatch++;
-      console.log(`${name.padEnd(6)}  | ${String(sheetRem).padStart(6)} | ${String(seed).padStart(6)} | ${seed - sheetRem > 0 ? "+" : ""}${seed - sheetRem}`);
+      console.log(`${name.padEnd(8)} | ${String(sheetRem).padStart(6)} | ${String(seed).padStart(6)} | ${seed - sheetRem > 0 ? "+" : ""}${seed - sheetRem}`);
     }
   }
   console.log("");
-  console.log(`총 ${studentIdx}명, 불일치: ${mismatch}명`);
+  console.log(`총 ${studentCount}명, 불일치: ${mismatch}명`);
   if (mismatch === 0) console.log("✅ 구글시트와 시드 데이터 완전 일치!");
 }
 
