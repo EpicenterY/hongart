@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { memo, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
@@ -8,7 +8,7 @@ import { NAV_ITEMS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { celebrate } from "@/lib/celebrate";
 
-export default function Sidebar() {
+export default memo(function Sidebar() {
   const pathname = usePathname();
 
   const { data: unpaidCount = 0 } = useQuery<number>({
@@ -19,8 +19,8 @@ export default function Sidebar() {
       const data = await res.json();
       return data.count ?? 0;
     },
-    staleTime: 0,
-    refetchInterval: 30_000,
+    staleTime: 60 * 1000,
+    refetchInterval: 120_000,
   });
 
   const prevUnpaidRef = useRef<number | null>(null);
@@ -66,4 +66,4 @@ export default function Sidebar() {
       </nav>
     </aside>
   );
-}
+});

@@ -58,8 +58,7 @@ model Student {
   pendingPlanChange PendingPlanChange?
   scheduleOverrides ScheduleOverride[]
 
-  @@index([status])
-  @@index([name])
+  @@index([status, name])
   @@map("students")
 }
 
@@ -95,8 +94,7 @@ model PaymentSession {
 
   student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
-  @@index([studentId])
-  @@index([createdAt])
+  @@index([studentId, createdAt])
   @@map("payment_sessions")
 }
 
@@ -129,8 +127,7 @@ model Memo {
 
   student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
-  @@index([studentId])
-  @@index([createdAt])
+  @@index([studentId, createdAt])
   @@map("memos")
 }
 
@@ -181,6 +178,7 @@ model VacationPeriod {
   startDate String @map("start_date") @db.VarChar(10)
   endDate   String @map("end_date") @db.VarChar(10)
 
+  @@index([startDate, endDate])
   @@map("vacation_periods")
 }
 

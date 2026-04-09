@@ -1165,7 +1165,13 @@ export default function StudentDetailPage({
         }
       >
         <div className="space-y-4">
-          <Input label="금액" type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
+          <Input
+            label="금액"
+            type="text"
+            inputMode="numeric"
+            value={paymentAmount ? Number(paymentAmount).toLocaleString() : ""}
+            onChange={(e) => setPaymentAmount(e.target.value.replace(/[^0-9]/g, ""))}
+          />
           <Select
             label="결제 방법"
             options={[

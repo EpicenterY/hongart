@@ -1,5 +1,3 @@
-import confetti from "canvas-confetti";
-
 type CelebrationLevel = "attendance" | "payment" | "newStudent" | "allPaid";
 
 // Web Audio API 사운드 합성 (MP3 파일 불필요)
@@ -51,7 +49,6 @@ function playChime() {
 function playFanfare() {
   const ctx = getAudioContext();
   if (!ctx) return;
-  // C5 E5 G5 C6 — 팡파르 느낌
   const notes = [
     { freq: 523, time: 0, dur: 0.2 },
     { freq: 659, time: 0.15, dur: 0.2 },
@@ -82,26 +79,33 @@ const soundPlayers: Record<CelebrationLevel, () => void> = {
   allPaid: playFanfare,
 };
 
+async function getConfetti() {
+  const mod = await import("canvas-confetti");
+  return mod.default;
+}
+
 export function celebrate(level: CelebrationLevel) {
   soundPlayers[level]();
 
-  switch (level) {
-    case "attendance":
-      confetti({ particleCount: 30, spread: 60, origin: { y: 0.7 } });
-      break;
-    case "payment":
-    case "newStudent":
-      confetti({ particleCount: 80, spread: 80, origin: { y: 0.6 } });
-      break;
-    case "allPaid": {
-      const fire = (delay: number) =>
-        setTimeout(() => {
-          confetti({ particleCount: 150, spread: 100, origin: { y: 0.5 } });
-        }, delay);
-      fire(0);
-      fire(300);
-      fire(600);
-      break;
+  getConfetti().then((confetti) => {
+    switch (level) {
+      case "attendance":
+        confetti({ particleCount: 30, spread: 60, origin: { y: 0.7 } });
+        break;
+      case "payment":
+      case "newStudent":
+        confetti({ particleCount: 80, spread: 80, origin: { y: 0.6 } });
+        break;
+      case "allPaid": {
+        const fire = (delay: number) =>
+          setTimeout(() => {
+            confetti({ particleCount: 150, spread: 100, origin: { y: 0.5 } });
+          }, delay);
+        fire(0);
+        fire(300);
+        fire(600);
+        break;
+      }
     }
-  }
+  });
 }

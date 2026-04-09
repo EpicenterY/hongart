@@ -1,12 +1,13 @@
 "use client";
 
+import { memo } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { BOTTOM_NAV_ITEMS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
-export default function BottomNav() {
+export default memo(function BottomNav() {
   const pathname = usePathname();
 
   const { data: unpaidCount = 0 } = useQuery<number>({
@@ -17,8 +18,8 @@ export default function BottomNav() {
       const data = await res.json();
       return data.count ?? 0;
     },
-    staleTime: 0,
-    refetchInterval: 30_000,
+    staleTime: 60 * 1000,
+    refetchInterval: 120_000,
   });
 
   return (
@@ -53,4 +54,4 @@ export default function BottomNav() {
       </div>
     </nav>
   );
-}
+});

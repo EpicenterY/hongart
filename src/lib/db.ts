@@ -681,7 +681,22 @@ export async function getUnpaidStudents(): Promise<{
 }
 
 export async function getUnpaidCount(): Promise<number> {
-  return (await getUnpaidStudents()).length;
+  const students = await prisma.student.findMany({
+    where: { status: "ACTIVE", subscription: { isActive: true } },
+    select: {
+      paymentSessions: { select: { capacity: true, createdAt: true }, orderBy: { createdAt: "asc" } },
+      attendances: { where: { status: { not: "ABSENT" } }, select: { id: true } },
+    },
+  });
+
+  let count = 0;
+  for (const s of students) {
+    if (s.paymentSessions.length === 0) continue;
+    const totalCapacity = s.paymentSessions.reduce((sum, p) => sum + p.capacity, 0);
+    const totalConsuming = s.attendances.length;
+    if (totalCapacity - totalConsuming <= 0) count++;
+  }
+  return count;
 }
 
 // ─── CRUD Functions: PendingPlanChanges ──────────────────
@@ -1043,28 +1058,33 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     ? Math.round((attended / monthRecords.length) * 100)
     : 0;
 
-  // Weekly attendance
+  // Weekly attendance — single query instead of 7
   const dayOfWeek = now.getDay();
   const monday = new Date(now);
   monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+  const mondayStr = toKSTDateStr(monday);
+  const weekStart = new Date(mondayStr + "T00:00:00Z");
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 7);
+  const weekEnd = new Date(toKSTDateStr(sunday) + "T00:00:00Z");
+
+  const weekRecords = await prisma.attendance.findMany({
+    where: {
+      date: { gte: weekStart, lt: weekEnd },
+      status: { not: "ABSENT" },
+    },
+    select: { date: true },
+  });
 
   const dayLabels = ["월", "화", "수", "목", "금", "토", "일"];
-  const weeklyAttendance: { day: string; count: number }[] = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    const dateStr = toKSTDateStr(d);
-    const dayStart = new Date(dateStr + "T00:00:00Z");
-    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
-
-    const count = await prisma.attendance.count({
-      where: {
-        date: { gte: dayStart, lt: dayEnd },
-        status: { not: "ABSENT" },
-      },
-    });
-    weeklyAttendance.push({ day: dayLabels[i], count });
+  const dayCounts = new Array(7).fill(0);
+  for (const r of weekRecords) {
+    const dateStr = toKSTDateStr(r.date);
+    const dObj = new Date(dateStr + "T00:00:00Z");
+    const diff = Math.round((dObj.getTime() - weekStart.getTime()) / (24 * 60 * 60 * 1000));
+    if (diff >= 0 && diff < 7) dayCounts[diff]++;
   }
+  const weeklyAttendance = dayLabels.map((day, i) => ({ day, count: dayCounts[i] }));
 
   return {
     todayAttendance: { present: presentCount, total: todayRecords.length },
@@ -1088,11 +1108,15 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
     return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, "0")}`;
   }
 
-  // Fetch payment sessions + active subscriptions in parallel
-  const [sessions, subscriptions, activeStudents] = await Promise.all([
+  // Fetch payment sessions + attendances + subscriptions + active students in parallel
+  const [sessions, attendances, subscriptions, activeStudents] = await Promise.all([
     prisma.paymentSession.findMany({
       select: { amount: true, createdAt: true, studentId: true },
       orderBy: { createdAt: "asc" },
+    }),
+    prisma.attendance.findMany({
+      where: { status: { not: "ABSENT" } },
+      select: { studentId: true, date: true },
     }),
     prisma.subscription.findMany({
       where: { isActive: true },
@@ -1104,24 +1128,15 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
     }),
   ]);
 
-  // 1. Monthly revenue (결제 금액 월별 집계 + 매출 변동 추이)
+  // 1. Monthly revenue (결제가 이루어진 달 기준)
   const revenueByMonth = new Map<string, number>();
-  const firstPaymentMonth = new Map<string, string>(); // studentId → first month
-  const lastPaymentMonth = new Map<string, string>();  // studentId → last month
   const firstPayment = new Map<string, Date>();
 
   for (const s of sessions) {
     const month = toMonthStr(s.createdAt);
-    // Revenue
     if (s.amount > 0) {
       revenueByMonth.set(month, (revenueByMonth.get(month) ?? 0) + s.amount);
     }
-    // Track first/last session month per student (including carryover)
-    const prev = firstPaymentMonth.get(s.studentId);
-    if (!prev || month < prev) firstPaymentMonth.set(s.studentId, month);
-    const prevLast = lastPaymentMonth.get(s.studentId);
-    if (!prevLast || month > prevLast) lastPaymentMonth.set(s.studentId, month);
-    // First payment per student (for longest ranking)
     if (!firstPayment.has(s.studentId) || s.createdAt < firstPayment.get(s.studentId)!) {
       firstPayment.set(s.studentId, s.createdAt);
     }
@@ -1131,19 +1146,20 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([month, amount]) => ({ month, amount }));
 
-  // 2. Student count trend (학생수 변동 추이 — 수강 중인 학생 수)
-  // 활성 학생: 첫 세션 ~ 현재 월, 퇴원 학생: 첫 세션 ~ 마지막 세션
-  const activeIdSet = new Set(activeStudents.map((s) => s.id));
-  const currentMonth = toMonthStr(now);
-  const allMonths = [...revenueByMonth.keys()].sort();
-  const studentCountTrend = allMonths.map((month) => {
-    let count = 0;
-    for (const [studentId, first] of firstPaymentMonth) {
-      const last = activeIdSet.has(studentId) ? currentMonth : lastPaymentMonth.get(studentId)!;
-      if (first <= month && month <= last) count++;
-    }
-    return { month, count };
-  });
+  // 2. Student count trend (출석이 유지되고 있는 학생 수)
+  const studentsPerMonth = new Map<string, Set<string>>();
+  for (const a of attendances) {
+    const month = toMonthStr(a.date);
+    if (!studentsPerMonth.has(month)) studentsPerMonth.set(month, new Set());
+    studentsPerMonth.get(month)!.add(a.studentId);
+  }
+
+  const allMonths = new Set([...revenueByMonth.keys(), ...studentsPerMonth.keys()]);
+  const sortedMonths = [...allMonths].sort();
+  const studentCountTrend = sortedMonths.map((month) => ({
+    month,
+    count: studentsPerMonth.get(month)?.size ?? 0,
+  }));
 
   // 3. Plan distribution (플랜별 비중)
   const planCounts: Record<number, number> = {};
@@ -1160,6 +1176,7 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
     }));
 
   // 4. Longest students ranking (장기 학생 랭킹 TOP 30)
+  const activeIdSet = new Set(activeStudents.map((s) => s.id));
   const activeNameMap = new Map(activeStudents.map((s) => [s.id, s.name]));
 
   const longestStudents = [...firstPayment.entries()]
