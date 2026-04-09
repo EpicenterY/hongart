@@ -1106,7 +1106,8 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
 
   // 1. Monthly revenue (결제 금액 월별 집계 + 매출 변동 추이)
   const revenueByMonth = new Map<string, number>();
-  const studentsPerMonth = new Map<string, Set<string>>();
+  const firstPaymentMonth = new Map<string, string>(); // studentId → first month
+  const lastPaymentMonth = new Map<string, string>();  // studentId → last month
   const firstPayment = new Map<string, Date>();
 
   for (const s of sessions) {
@@ -1115,12 +1116,12 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
     if (s.amount > 0) {
       revenueByMonth.set(month, (revenueByMonth.get(month) ?? 0) + s.amount);
     }
-    // Student count per month (paying students only)
-    if (s.amount > 0) {
-      if (!studentsPerMonth.has(month)) studentsPerMonth.set(month, new Set());
-      studentsPerMonth.get(month)!.add(s.studentId);
-    }
-    // First payment per student
+    // Track first/last session month per student (including carryover)
+    const prev = firstPaymentMonth.get(s.studentId);
+    if (!prev || month < prev) firstPaymentMonth.set(s.studentId, month);
+    const prevLast = lastPaymentMonth.get(s.studentId);
+    if (!prevLast || month > prevLast) lastPaymentMonth.set(s.studentId, month);
+    // First payment per student (for longest ranking)
     if (!firstPayment.has(s.studentId) || s.createdAt < firstPayment.get(s.studentId)!) {
       firstPayment.set(s.studentId, s.createdAt);
     }
@@ -1130,10 +1131,19 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([month, amount]) => ({ month, amount }));
 
-  // 2. Student count trend (학생수 변동 추이)
-  const studentCountTrend = [...studentsPerMonth.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([month, set]) => ({ month, count: set.size }));
+  // 2. Student count trend (학생수 변동 추이 — 수강 중인 학생 수)
+  // 활성 학생: 첫 세션 ~ 현재 월, 퇴원 학생: 첫 세션 ~ 마지막 세션
+  const activeIdSet = new Set(activeStudents.map((s) => s.id));
+  const currentMonth = toMonthStr(now);
+  const allMonths = [...revenueByMonth.keys()].sort();
+  const studentCountTrend = allMonths.map((month) => {
+    let count = 0;
+    for (const [studentId, first] of firstPaymentMonth) {
+      const last = activeIdSet.has(studentId) ? currentMonth : lastPaymentMonth.get(studentId)!;
+      if (first <= month && month <= last) count++;
+    }
+    return { month, count };
+  });
 
   // 3. Plan distribution (플랜별 비중)
   const planCounts: Record<number, number> = {};
@@ -1150,7 +1160,6 @@ export async function getAnalyticsData(): Promise<AnalyticsData> {
     }));
 
   // 4. Longest students ranking (장기 학생 랭킹 TOP 30)
-  const activeIdSet = new Set(activeStudents.map((s) => s.id));
   const activeNameMap = new Map(activeStudents.map((s) => [s.id, s.name]));
 
   const longestStudents = [...firstPayment.entries()]
