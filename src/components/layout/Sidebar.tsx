@@ -1,10 +1,12 @@
 "use client";
 
+import { useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { NAV_ITEMS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
+import { celebrate } from "@/lib/celebrate";
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -20,6 +22,14 @@ export default function Sidebar() {
     staleTime: 0,
     refetchInterval: 30_000,
   });
+
+  const prevUnpaidRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (prevUnpaidRef.current !== null && prevUnpaidRef.current > 0 && unpaidCount === 0) {
+      celebrate("allPaid");
+    }
+    prevUnpaidRef.current = unpaidCount;
+  }, [unpaidCount]);
 
   return (
     <aside className="hidden lg:flex lg:flex-col lg:w-60 lg:fixed lg:inset-y-0 bg-white border-r border-gray-200">

@@ -17,6 +17,7 @@ import {
 import { Button, Badge, Card, Modal, Tabs, Select, Input } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { formatDate, formatDateShort, formatCurrency, formatTime, DAY_LABELS } from "@/lib/format";
+import { celebrate } from "@/lib/celebrate";
 
 type StudentStatus = "ACTIVE" | "PAUSED" | "WITHDRAWN";
 type AttendanceStatus = "PRESENT" | "ABSENT" | "LATE" | "MAKEUP";
@@ -352,6 +353,7 @@ export default function StudentDetailPage({
       return res.json();
     },
     onSuccess: () => {
+      celebrate("payment");
       queryClient.invalidateQueries({ queryKey: ["student", id] });
       queryClient.invalidateQueries({ queryKey: ["students"] });
       queryClient.invalidateQueries({ queryKey: ["payments"] });

@@ -11,6 +11,7 @@ import { DraggableChip } from "@/components/schedule/DraggableChip";
 import { DroppableCell } from "@/components/schedule/DroppableCell";
 import { SchedulePopover } from "@/components/schedule/SchedulePopover";
 import { MakeupPicker } from "@/components/schedule/MakeupPicker";
+import { celebrate } from "@/lib/celebrate";
 
 interface ScheduleSlot { day: string; time: string; }
 
@@ -532,7 +533,7 @@ export default function SchedulePage() {
       if (context?.previous) queryClient.setQueryData(["attendance", vars.date], context.previous);
       if (context?.prevWeek) queryClient.setQueryData(["weekAttendance", weekMonday.toISOString()], context.prevWeek);
     },
-    onSuccess: () => {},
+    onSuccess: () => { celebrate("attendance"); },
     onSettled: (_data, _err, variables) => {
       queryClient.invalidateQueries({ queryKey: ["attendance"] });
       queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });

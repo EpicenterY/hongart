@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
 import { Button, Input, Card } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { celebrate } from "@/lib/celebrate";
 
 interface Plan {
   daysPerWeek: number;
@@ -120,6 +121,7 @@ export default function NewStudentPage() {
       return res.json();
     },
     onSuccess: (data) => {
+      celebrate("newStudent");
       queryClient.invalidateQueries({ queryKey: ["students"] });
       queryClient.invalidateQueries({ queryKey: ["schedule"] });
       queryClient.invalidateQueries({ queryKey: ["payments"] });
