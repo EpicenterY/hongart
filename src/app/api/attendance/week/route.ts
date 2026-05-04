@@ -3,6 +3,7 @@ import {
   getStudents,
   getActiveSubscriptions,
   getScheduleOverridesByDate,
+  getBatchDateStatus,
 } from "@/lib/db";
 import { StudentStatus } from "@/lib/types";
 import { ensureHolidaysLoaded } from "@/lib/holidays";
@@ -28,15 +29,20 @@ export async function GET(request: NextRequest) {
 
   await ensureHolidaysLoaded();
 
+  // Check date statuses in batch (3 queries for all dates)
+  const dayStatuses = await getBatchDateStatus(dates);
+
+  const normalDates = dates.filter(d => dayStatuses.get(d)?.status === "normal");
+
   // Shared queries (run once, not 5 times)
   const [activeStudents, subsMap] = await Promise.all([
     getStudents({ status: StudentStatus.ACTIVE }),
     getActiveSubscriptions(),
   ]);
 
-  // Per-date queries (all in parallel)
+  // Attendance for ALL dates (holidays may have records), overrides only for normal days
   const [overridesArr, attendanceRows] = await Promise.all([
-    Promise.all(dates.map(d => getScheduleOverridesByDate(d))),
+    Promise.all(normalDates.map(d => getScheduleOverridesByDate(d))),
     prisma.attendance.findMany({
       where: {
         date: {
@@ -58,12 +64,30 @@ export async function GET(request: NextRequest) {
   }
 
   const studentMap = new Map(activeStudents.map(s => [s.id, s]));
+  const result: Record<string, { status: string; holiday?: string; entries: unknown[] }> = {};
 
-  // Build result per date
-  const result: Record<string, { status: string; entries: unknown[] }> = {};
+  // Non-normal days: only attendance-based entries (no schedule)
+  for (const dateStr of dates) {
+    const ds = dayStatuses.get(dateStr)!;
+    if (ds.status === "normal") continue;
 
-  for (let i = 0; i < dates.length; i++) {
-    const dateStr = dates[i];
+    const records = (attendanceByDate.get(dateStr) ?? []).map(r => ({
+      studentId: r.studentId,
+      studentName: r.student.name,
+      scheduleTime: r.timeSlot,
+      attendance: { id: r.id, status: r.status, note: r.note },
+    }));
+
+    result[dateStr] = {
+      status: ds.status,
+      ...(("name" in ds) ? { holiday: ds.name } : {}),
+      entries: records,
+    };
+  }
+
+  // Normal days: full schedule + override + attendance logic
+  for (let i = 0; i < normalDates.length; i++) {
+    const dateStr = normalDates[i];
     const overrides = overridesArr[i];
     const existingRecords = (attendanceByDate.get(dateStr) ?? []).map(r => ({
       id: r.id,

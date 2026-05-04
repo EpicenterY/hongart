@@ -754,6 +754,27 @@ export default function SchedulePage() {
   }
 
   function getGridEntries(time: string, day: string, dateStr: string): ScheduleEntry[] {
+    // On holidays/vacations/disabled days: only show students with actual attendance records
+    const dayStatus = getDateInfo(dateStr, day);
+    if (dayStatus.type !== "normal") {
+      const filtered: ScheduleEntry[] = [];
+      if (weekAttendance?.[dateStr]) {
+        for (const [, att] of Object.entries(weekAttendance[dateStr])) {
+          const realId = att.studentId;
+          if (!realId || att.scheduleTime !== time) continue;
+          if (filtered.some(e => e.studentId === realId)) continue;
+          filtered.push({
+            studentId: realId,
+            studentName: att.studentName ?? realId,
+            schedule: [],
+            daysPerWeek: 0,
+            startDate: "1970-01-01",
+          });
+        }
+      }
+      return filtered;
+    }
+
     const base = (grid[time]?.[day] ?? []).filter(e => e.startDate <= dateStr);
 
     // Remove students whose originalDate matches this cell (they moved away)

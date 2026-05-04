@@ -910,6 +910,39 @@ export async function getDateStatus(dateStr: string): Promise<DateStatus> {
   return { status: "normal" };
 }
 
+export async function getBatchDateStatus(dates: string[]): Promise<Map<string, DateStatus>> {
+  const [holidays, vacations, settings] = await Promise.all([
+    prisma.publicHoliday.findMany({ where: { date: { in: dates } } }),
+    prisma.vacationPeriod.findMany({
+      where: { startDate: { lte: dates[dates.length - 1] }, endDate: { gte: dates[0] } },
+    }),
+    getClassDaySettings(),
+  ]);
+
+  const holidayMap = new Map(holidays.map(h => [h.date, h.name]));
+  const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  const result = new Map<string, DateStatus>();
+
+  for (const dateStr of dates) {
+    if (holidayMap.has(dateStr)) {
+      result.set(dateStr, { status: "holiday", name: holidayMap.get(dateStr)! });
+      continue;
+    }
+    const vac = vacations.find(v => v.startDate <= dateStr && v.endDate >= dateStr);
+    if (vac) {
+      result.set(dateStr, { status: "vacation", name: vac.name });
+      continue;
+    }
+    const dayOfWeek = new Date(dateStr + "T00:00:00Z").getDay();
+    if (!settings.enabledDays.includes(dayNames[dayOfWeek])) {
+      result.set(dateStr, { status: "disabled_day" });
+      continue;
+    }
+    result.set(dateStr, { status: "normal" });
+  }
+  return result;
+}
+
 // ─── Plans ───────────────────────────────────────────────
 
 export async function getPlans(): Promise<Plan[]> {
