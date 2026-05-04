@@ -145,9 +145,10 @@ async function main() {
       carryOver.push([sid, co]);
     }
 
-    // Payment rounds (cols 4-16 = monthIndex 0-12)
+    // Payment rounds (cols 4-17 = up to 14 months, independent of attendance sheets)
     let lastCap = 0;
-    for (let mi = 0; mi < 13; mi++) {
+    const MAX_ROUND_COLS = 14;
+    for (let mi = 0; mi < MAX_ROUND_COLS; mi++) {
       const val = row[4 + mi]?.trim();
       if (val && val !== "") {
         const cap = parseInt(val);

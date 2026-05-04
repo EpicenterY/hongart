@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { LogOut, Shield, Info, CreditCard, CalendarDays, Umbrella, CalendarOff, Plus, Pencil, Trash2, RefreshCw } from "lucide-react";
+import { LogOut, Shield, Info, CreditCard, CalendarDays, Umbrella, CalendarOff, Plus, Pencil, Trash2, RefreshCw, Database, Download, Upload } from "lucide-react";
 import { Card, Button, Input, Modal } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
@@ -46,6 +46,13 @@ export default function SettingsPage() {
   const [pinSuccess, setPinSuccess] = useState(false);
   const [pinLoading, setPinLoading] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
+
+  // Backup states
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [restoreLoading, setRestoreLoading] = useState(false);
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<{ name: string; data: unknown } | null>(null);
+  const [backupMsg, setBackupMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Plan states
   const [editingPlan, setEditingPlan] = useState<number | null>(null);
@@ -228,6 +235,76 @@ export default function SettingsPage() {
       setEditFee("");
     },
   });
+
+  async function handleBackupDownload() {
+    setBackupLoading(true);
+    setBackupMsg(null);
+    try {
+      const res = await fetch("/api/settings/backup");
+      if (!res.ok) throw new Error("백업 실패");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = res.headers.get("Content-Disposition")?.match(/filename="(.+)"/)?.[1] ?? "hongart-backup.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setBackupMsg({ type: "success", text: "백업 파일을 다운로드했습니다." });
+    } catch {
+      setBackupMsg({ type: "error", text: "백업 다운로드에 실패했습니다." });
+    } finally {
+      setBackupLoading(false);
+    }
+  }
+
+  function handleRestoreFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBackupMsg(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string);
+        if (!data.version || !data.data) {
+          setBackupMsg({ type: "error", text: "올바른 백업 파일이 아닙니다." });
+          return;
+        }
+        setRestoreFile({ name: file.name, data });
+        setRestoreConfirmOpen(true);
+      } catch {
+        setBackupMsg({ type: "error", text: "JSON 파일을 읽을 수 없습니다." });
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  async function handleRestoreConfirm() {
+    if (!restoreFile) return;
+    setRestoreLoading(true);
+    setBackupMsg(null);
+    try {
+      const res = await fetch("/api/settings/backup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(restoreFile.data),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "복원 실패");
+      }
+      queryClient.invalidateQueries();
+      setBackupMsg({ type: "success", text: "데이터가 복원되었습니다." });
+    } catch (err) {
+      setBackupMsg({ type: "error", text: err instanceof Error ? err.message : "복원에 실패했습니다." });
+    } finally {
+      setRestoreLoading(false);
+      setRestoreConfirmOpen(false);
+      setRestoreFile(null);
+    }
+  }
 
   async function handlePinChange() {
     setPinError("");
@@ -554,6 +631,83 @@ export default function SettingsPage() {
             </p>
           </div>
         </Card>
+
+        {/* Data Backup */}
+        <Card
+          header={
+            <div className="flex items-center gap-2">
+              <Database className="w-5 h-5 text-primary-600" />
+              <h2 className="font-semibold text-gray-900">데이터 백업</h2>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <Button
+                onClick={handleBackupDownload}
+                loading={backupLoading}
+                variant="secondary"
+                className="flex-1"
+              >
+                <Download className="w-4 h-4" />
+                백업 다운로드
+              </Button>
+              <label className="flex-1">
+                <input
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={handleRestoreFileSelect}
+                />
+                <Button
+                  variant="secondary"
+                  className="w-full"
+                  onClick={(e) => {
+                    const input = (e.currentTarget as HTMLElement).closest("label")?.querySelector("input");
+                    input?.click();
+                  }}
+                >
+                  <Upload className="w-4 h-4" />
+                  백업에서 복원
+                </Button>
+              </label>
+            </div>
+            {backupMsg && (
+              <p className={cn("text-sm", backupMsg.type === "success" ? "text-green-600" : "text-red-600")}>
+                {backupMsg.text}
+              </p>
+            )}
+            <p className="text-xs text-gray-400">
+              전체 데이터를 JSON 파일로 백업하거나, 이전 백업에서 복원합니다.
+            </p>
+          </div>
+        </Card>
+
+        {/* Restore Confirm Modal */}
+        <Modal
+          isOpen={restoreConfirmOpen}
+          onClose={() => { setRestoreConfirmOpen(false); setRestoreFile(null); }}
+          title="데이터 복원"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => { setRestoreConfirmOpen(false); setRestoreFile(null); }}>
+                취소
+              </Button>
+              <Button variant="danger" onClick={handleRestoreConfirm} loading={restoreLoading}>
+                복원
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-2">
+            <p className="text-sm text-gray-700">
+              <strong>{restoreFile?.name}</strong> 파일에서 데이터를 복원합니다.
+            </p>
+            <p className="text-sm text-red-600 font-medium">
+              현재 데이터가 백업 시점으로 완전히 대체됩니다. 계속하시겠습니까?
+            </p>
+          </div>
+        </Modal>
 
         {/* PIN Change */}
         <Card

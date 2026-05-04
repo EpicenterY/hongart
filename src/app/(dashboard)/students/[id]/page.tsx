@@ -13,6 +13,8 @@ import {
   Calendar,
   CreditCard,
   AlertTriangle,
+  Phone,
+  StickyNote,
 } from "lucide-react";
 import { Button, Badge, Card, Modal, Tabs, Select, Input } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -162,7 +164,7 @@ const BASE_TABS = [
   { key: "attendance", label: "출석" },
   { key: "payments", label: "결제" },
   { key: "subscription", label: "수강권" },
-  { key: "memos", label: "메모" },
+  { key: "info", label: "학생정보" },
 ];
 
 /** 소모성 출석 여부 */
@@ -1073,8 +1075,40 @@ export default function StudentDetailPage({
         )}
 
         {/* Memos Tab */}
-        {activeTab === "memos" && (
+        {activeTab === "info" && (
           <div className="space-y-4">
+            {/* 연락처 */}
+            <Card header={
+              <div className="flex items-center gap-2">
+                <Phone className="w-4 h-4 text-gray-500" />
+                <span className="text-sm font-semibold text-gray-900">연락처</span>
+              </div>
+            }>
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-500 w-28 shrink-0">전화번호 (부모)</span>
+                  <span className="text-sm text-gray-900">{student.parentPhone || "—"}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-500 w-28 shrink-0">전화번호 (아이)</span>
+                  <span className="text-sm text-gray-900">{student.phone || "—"}</span>
+                </div>
+              </div>
+            </Card>
+
+            {/* 특이사항 (스프레드시트 메모) */}
+            {student.note && (
+              <Card header={
+                <div className="flex items-center gap-2">
+                  <StickyNote className="w-4 h-4 text-gray-500" />
+                  <span className="text-sm font-semibold text-gray-900">특이사항</span>
+                </div>
+              }>
+                <p className="text-sm text-gray-700 whitespace-pre-wrap">{student.note}</p>
+              </Card>
+            )}
+
+            {/* 새 메모 작성 */}
             <Card header={<span className="text-sm font-semibold text-gray-900">새 메모 작성</span>}>
               <div className="space-y-3">
                 <Select
@@ -1107,6 +1141,7 @@ export default function StudentDetailPage({
               </div>
             </Card>
 
+            {/* 메모 목록 */}
             {student.memos.length === 0 ? (
               <Card>
                 <p className="text-sm text-gray-500 text-center py-4">메모가 없습니다.</p>
