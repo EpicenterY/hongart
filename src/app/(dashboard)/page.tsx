@@ -586,6 +586,63 @@ export default function SchedulePage() {
     },
   });
 
+  // ─── Reset attendance mutation (revert to movable) ──
+  const resetAttendanceMutation = useMutation({
+    mutationFn: async ({ studentId, dateStr, timeSlot }: { studentId: string; dateStr: string; timeSlot: string }) => {
+      const res = await fetch(`/api/attendance?studentId=${studentId}&date=${dateStr}&timeSlot=${encodeURIComponent(timeSlot)}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+    onMutate: async ({ studentId, dateStr, timeSlot }) => {
+      setPopover(null);
+      // Optimistic: clear attendance in daily view (keep entry, null out attendance)
+      if (view === "daily" && dateStr === dailyDate) {
+        await queryClient.cancelQueries({ queryKey: ["attendance", dailyDate] });
+        const previous = queryClient.getQueryData<DailyAttendanceResponse>(["attendance", dailyDate]);
+        queryClient.setQueryData<DailyAttendanceResponse>(["attendance", dailyDate], (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            entries: old.entries.map((e) => {
+              if (e.studentId !== studentId || e.scheduleTime !== timeSlot) return e;
+              const wasCounted = e.attendance ? ["PRESENT", "LATE", "MAKEUP"].includes(e.attendance.status) : false;
+              return {
+                ...e,
+                attendance: null,
+                usedSessions: e.usedSessions !== null && wasCounted ? e.usedSessions - 1 : e.usedSessions,
+                remainingClasses: e.remainingClasses !== null && wasCounted ? e.remainingClasses + 1 : e.remainingClasses,
+              };
+            }),
+          };
+        });
+        return { previous };
+      }
+      // Optimistic: remove from weekly attendance map
+      if (view === "weekly") {
+        await queryClient.cancelQueries({ queryKey: ["weekAttendance"] });
+        const prevWeek = queryClient.getQueryData<Record<string, Record<string, AttendanceInfo>>>(["weekAttendance", weekMonday.toISOString()]);
+        queryClient.setQueryData<Record<string, Record<string, AttendanceInfo>>>(["weekAttendance", weekMonday.toISOString()], (old) => {
+          if (!old || !old[dateStr]) return old;
+          const dateMap = { ...old[dateStr] };
+          delete dateMap[`${studentId}_${timeSlot}`];
+          return { ...old, [dateStr]: dateMap };
+        });
+        return { prevWeek };
+      }
+    },
+    onError: (_err, vars, context) => {
+      if (context?.previous) queryClient.setQueryData(["attendance", vars.dateStr], context.previous);
+      if (context?.prevWeek) queryClient.setQueryData(["weekAttendance", weekMonday.toISOString()], context.prevWeek);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["attendance"] });
+      queryClient.invalidateQueries({ queryKey: ["weekAttendance"] });
+      queryClient.invalidateQueries({ queryKey: ["students"] });
+      queryClient.invalidateQueries({ queryKey: ["payments"] });
+      queryClient.invalidateQueries({ queryKey: ["unpaid-count"] });
+    },
+  });
+
   // ─── Daily view query ──────────────────────────────
   const { data: dailyResponse, isLoading: dailyLoading } = useQuery<DailyAttendanceResponse>({
     queryKey: ["attendance", dailyDate],
@@ -1625,6 +1682,13 @@ export default function SchedulePage() {
           onCancelMakeup={popoverAttEntry?.id ? () => {
             cancelMakeupMutation.mutate({
               attendanceId: popoverAttEntry.id,
+              studentId: popover.studentId,
+              dateStr: popover.dateStr,
+              timeSlot: popover.timeSlot,
+            });
+          } : undefined}
+          onResetAttendance={popoverAttStatus && popoverAttStatus !== "MAKEUP" ? () => {
+            resetAttendanceMutation.mutate({
               studentId: popover.studentId,
               dateStr: popover.dateStr,
               timeSlot: popover.timeSlot,

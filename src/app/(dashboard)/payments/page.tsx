@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { CreditCard, Calendar, AlertTriangle } from "lucide-react";
+import { CreditCard, Calendar, AlertTriangle, Clock } from "lucide-react";
 import { Card, Badge, Tabs, EmptyState } from "@/components/ui";
 import { formatCurrency } from "@/lib/format";
 
@@ -35,7 +35,7 @@ interface PaymentsResponse {
 }
 
 const METHOD_LABEL: Record<string, string> = {
-  CASH: "현금",
+  CASH: "결제선생",
   CARD: "카드",
   TRANSFER: "계좌이체",
 };
@@ -54,10 +54,15 @@ export default function PaymentsPage() {
   });
 
   const sessions = data?.credits ?? [];
-  const unpaidStudents = data?.unpaidStudents ?? [];
+  const allUnpaid = data?.unpaidStudents ?? [];
+
+  // Split: 미결제 (remaining < 0) vs 결제대기 (remaining === 0)
+  const overdueStudents = allUnpaid.filter((s) => s.remaining < 0).sort((a, b) => a.remaining - b.remaining);
+  const pendingStudents = allUnpaid.filter((s) => s.remaining === 0);
 
   const tabs = [
-    { key: "unpaid", label: "미결제", badge: unpaidStudents.length },
+    { key: "unpaid", label: "미결제", badge: overdueStudents.length || undefined },
+    { key: "pending", label: "결제대기", badge: pendingStudents.length || undefined },
     { key: "paid", label: "결제 완료", count: sessions.length },
   ];
 
@@ -82,7 +87,7 @@ export default function PaymentsPage() {
         </div>
       ) : activeTab === "unpaid" ? (
         <div className="space-y-3">
-          {unpaidStudents.map((student) => (
+          {overdueStudents.map((student) => (
             <Card
               key={student.studentId}
               className="border-red-300 bg-red-50/30 cursor-pointer hover:border-red-400 transition-colors"
@@ -94,10 +99,10 @@ export default function PaymentsPage() {
                     <span className="font-semibold text-gray-900 truncate">
                       {student.studentName}
                     </span>
-                    <Badge variant="overdue">결제 필요</Badge>
+                    <Badge variant="overdue">미결제</Badge>
                   </div>
                   <div className="flex flex-wrap items-center gap-3 text-sm text-gray-500">
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-1 text-red-600 font-semibold">
                       <AlertTriangle className="w-3.5 h-3.5" />
                       잔여 {student.remaining}회
                     </span>
@@ -112,11 +117,51 @@ export default function PaymentsPage() {
             </Card>
           ))}
 
-          {unpaidStudents.length === 0 && (
+          {overdueStudents.length === 0 && (
             <EmptyState
               icon={CreditCard}
-              title="미결제 내역이 없습니다"
-              description="모든 결제가 완료되었습니다."
+              title="미결제 학생이 없습니다"
+              description="초과 사용 중인 학생이 없습니다."
+            />
+          )}
+        </div>
+      ) : activeTab === "pending" ? (
+        <div className="space-y-3">
+          {pendingStudents.map((student) => (
+            <Card
+              key={student.studentId}
+              className="border-yellow-300 bg-yellow-50/30 cursor-pointer hover:border-yellow-400 transition-colors"
+              onClick={() => router.push(`/students/${student.studentId}?tab=payments`)}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-semibold text-gray-900 truncate">
+                      {student.studentName}
+                    </span>
+                    <Badge variant="pending">결제대기</Badge>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 text-sm text-gray-500">
+                    <span className="flex items-center gap-1 text-yellow-600 font-semibold">
+                      <Clock className="w-3.5 h-3.5" />
+                      잔여 0회
+                    </span>
+                    {student.monthlyFee > 0 && (
+                      <span className="font-medium text-gray-900">
+                        {formatCurrency(student.monthlyFee)} · {student.capacity}회
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ))}
+
+          {pendingStudents.length === 0 && (
+            <EmptyState
+              icon={Clock}
+              title="결제대기 학생이 없습니다"
+              description="잔여 횟수가 0인 학생이 없습니다."
             />
           )}
         </div>

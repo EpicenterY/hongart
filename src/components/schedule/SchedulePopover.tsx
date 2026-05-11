@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { User } from "lucide-react";
+import { User, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface AttendanceButton {
@@ -18,6 +18,7 @@ interface SchedulePopoverProps {
   attendanceButtons?: AttendanceButton[];
   onAttendance?: (status: string) => void;
   onCancelMakeup?: () => void;
+  onResetAttendance?: () => void;
 }
 
 export function SchedulePopover({
@@ -28,6 +29,7 @@ export function SchedulePopover({
   attendanceButtons,
   onAttendance,
   onCancelMakeup,
+  onResetAttendance,
 }: SchedulePopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -73,24 +75,35 @@ export function SchedulePopover({
           </button>
         </div>
       ) : attendanceButtons && onAttendance ? (
-        <div className="px-3 py-2.5 flex gap-2">
-          {attendanceButtons.map((btn) => {
-            const isActive = currentAttendanceStatus === btn.status;
-            return (
-              <button
-                key={btn.status}
-                onClick={() => onAttendance(btn.status)}
-                className={cn(
-                  "flex-1 py-2.5 rounded-lg text-xs font-bold transition-colors",
-                  isActive
-                    ? `${btn.color} text-white`
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200",
-                )}
-              >
-                {btn.label}
-              </button>
-            );
-          })}
+        <div className="px-3 py-2.5 space-y-2">
+          <div className="flex gap-2">
+            {attendanceButtons.map((btn) => {
+              const isActive = currentAttendanceStatus === btn.status;
+              return (
+                <button
+                  key={btn.status}
+                  onClick={() => onAttendance(btn.status)}
+                  className={cn(
+                    "flex-1 py-2.5 rounded-lg text-xs font-bold transition-colors",
+                    isActive
+                      ? `${btn.color} text-white`
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200",
+                  )}
+                >
+                  {btn.label}
+                </button>
+              );
+            })}
+          </div>
+          {currentAttendanceStatus && onResetAttendance && (
+            <button
+              onClick={onResetAttendance}
+              className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 transition-colors"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+              출석 취소
+            </button>
+          )}
         </div>
       ) : null}
       <div className={cn("px-3 py-2", attendanceButtons && onAttendance && "border-t border-gray-100")}>

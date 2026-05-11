@@ -491,6 +491,17 @@ export async function deleteAttendance(id: string): Promise<boolean> {
   }
 }
 
+export async function deleteAttendanceByKey(studentId: string, date: string, timeSlot: string): Promise<boolean> {
+  try {
+    await prisma.attendance.delete({
+      where: { studentId_date_timeSlot: { studentId, date: new Date(date + "T00:00:00Z"), timeSlot } },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Balance Info ────────────────────────────────────────
 
 export async function getBalanceInfo(studentId: string): Promise<BalanceInfo> {
@@ -694,7 +705,7 @@ export async function getUnpaidCount(): Promise<number> {
     if (s.paymentSessions.length === 0) continue;
     const totalCapacity = s.paymentSessions.reduce((sum, p) => sum + p.capacity, 0);
     const totalConsuming = s.attendances.length;
-    if (totalCapacity - totalConsuming <= 0) count++;
+    if (totalCapacity - totalConsuming < 0) count++;
   }
   return count;
 }

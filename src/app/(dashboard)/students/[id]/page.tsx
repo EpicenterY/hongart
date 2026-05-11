@@ -147,7 +147,7 @@ const memoCategoryMap: Record<MemoCategory, { variant: "active" | "paused" | "wi
 };
 
 const paymentMethodLabel: Record<PaymentMethod, string> = {
-  CASH: "현금",
+  CASH: "결제선생",
   CARD: "카드",
   TRANSFER: "계좌이체",
 };
@@ -1212,7 +1212,7 @@ export default function StudentDetailPage({
             options={[
               { value: "TRANSFER", label: "계좌이체" },
               { value: "CARD", label: "카드" },
-              { value: "CASH", label: "현금" },
+              { value: "CASH", label: "결제선생" },
             ]}
             value={paymentMethod}
             onChange={(e) => setPaymentMethod(e.target.value)}

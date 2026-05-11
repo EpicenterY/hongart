@@ -6,6 +6,7 @@ import {
   createAttendance,
   updateAttendance,
   deleteAttendance,
+  deleteAttendanceByKey,
   getDateStatus,
   getScheduleOverridesByDate,
   getActiveSubscriptions,
@@ -211,8 +212,21 @@ export async function POST(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
+  const studentId = searchParams.get("studentId");
+  const date = searchParams.get("date");
+  const timeSlot = searchParams.get("timeSlot");
+
+  // Support deletion by studentId+date+timeSlot (avoids temp ID race condition)
+  if (studentId && date && timeSlot) {
+    const ok = await deleteAttendanceByKey(studentId, date, timeSlot);
+    if (!ok) {
+      return NextResponse.json({ error: "삭제 실패" }, { status: 404 });
+    }
+    return NextResponse.json({ success: true });
+  }
+
   if (!id) {
-    return NextResponse.json({ error: "id는 필수입니다." }, { status: 400 });
+    return NextResponse.json({ error: "id 또는 studentId+date+timeSlot은 필수입니다." }, { status: 400 });
   }
   const ok = await deleteAttendance(id);
   if (!ok) {
