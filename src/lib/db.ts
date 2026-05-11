@@ -26,7 +26,7 @@ import {
   computeFilling,
   toKSTDateStr,
 } from "./types";
-import type { Prisma, AttendanceStatus as PrismaAttendanceStatus } from "@prisma/client";
+import type { Prisma, AttendanceStatus as PrismaAttendanceStatus, MemoCategory as PrismaMemoCategory } from "@prisma/client";
 
 // ─── JSON Helpers ────────────────────────────────────────
 
@@ -801,6 +801,29 @@ export async function createMemo(
     },
   });
   return mapMemo(row);
+}
+
+export async function updateMemo(
+  id: string,
+  data: { category?: string; content?: string },
+): Promise<Memo> {
+  const row = await prisma.memo.update({
+    where: { id },
+    data: {
+      ...(data.category && { category: data.category as PrismaMemoCategory }),
+      ...(data.content && { content: data.content }),
+    },
+  });
+  return mapMemo(row);
+}
+
+export async function deleteMemo(id: string): Promise<boolean> {
+  try {
+    await prisma.memo.delete({ where: { id } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ─── Class Day Settings ─────────────────────────────────

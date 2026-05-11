@@ -15,8 +15,10 @@ import {
   AlertTriangle,
   Phone,
   StickyNote,
+  Check,
+  X,
 } from "lucide-react";
-import { Button, Badge, Card, Modal, Tabs, Select, Input } from "@/components/ui";
+import { Button, Badge, Card, Modal, Tabs, Select, Input, toast } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { formatDate, formatDateShort, formatCurrency, formatTime, DAY_LABELS } from "@/lib/format";
 import { celebrate } from "@/lib/celebrate";
@@ -245,6 +247,9 @@ export default function StudentDetailPage({
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [memoCategory, setMemoCategory] = useState("GENERAL");
   const [memoContent, setMemoContent] = useState("");
+  const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
+  const [editMemoCategory, setEditMemoCategory] = useState("");
+  const [editMemoContent, setEditMemoContent] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("TRANSFER");
   const [expandedCycles, setExpandedCycles] = useState<Set<number>>(new Set());
@@ -401,10 +406,67 @@ export default function StudentDetailPage({
       if (!res.ok) throw new Error("Failed to create memo");
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["student", id] });
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["student", id] });
+      const prev = queryClient.getQueryData<StudentDetail>(["student", id]);
+      if (prev) {
+        queryClient.setQueryData<StudentDetail>(["student", id], {
+          ...prev,
+          memos: [{ id: "temp-" + Date.now(), category: memoCategory as MemoCategory, content: memoContent, createdAt: new Date().toISOString() }, ...prev.memos],
+        });
+      }
       setMemoContent("");
+      return { prev };
     },
+    onError: (_err, _vars, ctx) => { if (ctx?.prev) queryClient.setQueryData(["student", id], ctx.prev); toast("메모 추가에 실패했습니다.", "error"); },
+    onSettled: () => { queryClient.invalidateQueries({ queryKey: ["student", id] }); },
+  });
+
+  const updateMemoMutation = useMutation({
+    mutationFn: async ({ memoId, category, content }: { memoId: string; category: string; content: string }) => {
+      const res = await fetch(`/api/students/${id}/memos`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memoId, category, content }),
+      });
+      if (!res.ok) throw new Error("Failed to update memo");
+      return res.json();
+    },
+    onMutate: async ({ memoId, category, content }) => {
+      await queryClient.cancelQueries({ queryKey: ["student", id] });
+      const prev = queryClient.getQueryData<StudentDetail>(["student", id]);
+      if (prev) {
+        queryClient.setQueryData<StudentDetail>(["student", id], {
+          ...prev,
+          memos: prev.memos.map((m) => m.id === memoId ? { ...m, category: category as MemoCategory, content } : m),
+        });
+      }
+      setEditingMemoId(null);
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => { if (ctx?.prev) queryClient.setQueryData(["student", id], ctx.prev); toast("메모 수정에 실패했습니다.", "error"); },
+    onSettled: () => { queryClient.invalidateQueries({ queryKey: ["student", id] }); },
+  });
+
+  const deleteMemoMutation = useMutation({
+    mutationFn: async (memoId: string) => {
+      const res = await fetch(`/api/students/${id}/memos?memoId=${memoId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete memo");
+      return res.json();
+    },
+    onMutate: async (memoId) => {
+      await queryClient.cancelQueries({ queryKey: ["student", id] });
+      const prev = queryClient.getQueryData<StudentDetail>(["student", id]);
+      if (prev) {
+        queryClient.setQueryData<StudentDetail>(["student", id], {
+          ...prev,
+          memos: prev.memos.filter((m) => m.id !== memoId),
+        });
+      }
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => { if (ctx?.prev) queryClient.setQueryData(["student", id], ctx.prev); toast("메모 삭제에 실패했습니다.", "error"); },
+    onSettled: () => { queryClient.invalidateQueries({ queryKey: ["student", id] }); },
   });
 
   if (isLoading) {
@@ -1150,17 +1212,75 @@ export default function StudentDetailPage({
               <div className="space-y-3">
                 {student.memos.map((memo) => {
                   const cat = memoCategoryMap[memo.category] || memoCategoryMap.OTHER;
+                  const isEditing = editingMemoId === memo.id;
                   return (
                     <Card key={memo.id}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <Badge variant={cat.variant}>{cat.label}</Badge>
-                            <span className="text-xs text-gray-400">{formatDate(memo.createdAt)}</span>
+                      {isEditing ? (
+                        <div className="space-y-3">
+                          <Select
+                            label="카테고리"
+                            options={MEMO_CATEGORY_OPTIONS}
+                            value={editMemoCategory}
+                            onChange={(e) => setEditMemoCategory(e.target.value)}
+                          />
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1.5">내용</label>
+                            <textarea
+                              value={editMemoContent}
+                              onChange={(e) => setEditMemoContent(e.target.value)}
+                              rows={3}
+                              className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500"
+                            />
                           </div>
-                          <p className="text-sm text-gray-700">{memo.content}</p>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => setEditingMemoId(null)}
+                            >
+                              <X className="w-3.5 h-3.5" />
+                              취소
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => updateMemoMutation.mutate({ memoId: memo.id, category: editMemoCategory, content: editMemoContent })}
+                              disabled={!editMemoContent.trim()}
+                              loading={updateMemoMutation.isPending}
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              저장
+                            </Button>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge variant={cat.variant}>{cat.label}</Badge>
+                              <span className="text-xs text-gray-400">{formatDate(memo.createdAt)}</span>
+                            </div>
+                            <p className="text-sm text-gray-700 whitespace-pre-wrap">{memo.content}</p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => {
+                                setEditingMemoId(memo.id);
+                                setEditMemoCategory(memo.category);
+                                setEditMemoContent(memo.content);
+                              }}
+                              className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => deleteMemoMutation.mutate(memo.id)}
+                              className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-red-50 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </Card>
                   );
                 })}

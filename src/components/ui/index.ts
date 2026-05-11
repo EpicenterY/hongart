@@ -7,3 +7,4 @@ export { Select } from "./Select";
 export { Table } from "./Table";
 export { Tabs } from "./Tabs";
 export { EmptyState } from "./EmptyState";
+export { ToastContainer, toast } from "./Toast";

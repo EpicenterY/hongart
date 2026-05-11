@@ -1,5 +1,6 @@
 import Sidebar from "@/components/layout/Sidebar";
 import BottomNav from "@/components/layout/BottomNav";
+import { ToastContainer } from "@/components/ui";
 
 export default function DashboardLayout({
   children,
@@ -13,6 +14,7 @@ export default function DashboardLayout({
         <main className="pb-20 lg:pb-6">{children}</main>
       </div>
       <BottomNav />
+      <ToastContainer />
     </div>
   );
 }
