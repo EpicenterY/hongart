@@ -397,22 +397,22 @@ export default function StudentDetailPage({
   });
 
   const memoMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async ({ category, content }: { category: string; content: string }) => {
       const res = await fetch(`/api/students/${id}/memos`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category: memoCategory, content: memoContent }),
+        body: JSON.stringify({ category, content }),
       });
       if (!res.ok) throw new Error("Failed to create memo");
       return res.json();
     },
-    onMutate: async () => {
+    onMutate: async ({ category, content }) => {
       await queryClient.cancelQueries({ queryKey: ["student", id] });
       const prev = queryClient.getQueryData<StudentDetail>(["student", id]);
       if (prev) {
         queryClient.setQueryData<StudentDetail>(["student", id], {
           ...prev,
-          memos: [{ id: "temp-" + Date.now(), category: memoCategory as MemoCategory, content: memoContent, createdAt: new Date().toISOString() }, ...prev.memos],
+          memos: [{ id: "temp-" + Date.now(), category: category as MemoCategory, content, createdAt: new Date().toISOString() }, ...prev.memos],
         });
       }
       setMemoContent("");
@@ -1192,7 +1192,7 @@ export default function StudentDetailPage({
                 <div className="flex justify-end">
                   <Button
                     size="sm"
-                    onClick={() => memoMutation.mutate()}
+                    onClick={() => memoMutation.mutate({ category: memoCategory, content: memoContent })}
                     disabled={!memoContent.trim()}
                     loading={memoMutation.isPending}
                   >
