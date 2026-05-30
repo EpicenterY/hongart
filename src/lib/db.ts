@@ -203,7 +203,7 @@ export async function getStudentsWithBalance(filter?: StudentFilter) {
       subscription: sub
         ? { daysPerWeek: sub.daysPerWeek, schedule: sub.schedule, monthlyFee: sub.monthlyFee }
         : null,
-      remainingClasses: paymentState === "OK" ? currentSessionRemaining : null,
+      remainingClasses: hasPaymentHistory ? filling.remaining : null,
       paymentState,
     };
   });

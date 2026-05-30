@@ -105,9 +105,15 @@ export default function StudentsPage() {
       header: "잔여횟수",
       render: (row: Record<string, unknown>) => {
         const item = row as unknown as StudentListItem;
-        if (item.paymentState === "NEEDS_PAYMENT" || item.paymentState === "NEW") return <Badge variant="overdue">미결제</Badge>;
-        if (item.remainingClasses === null) return <span className="text-gray-400">-</span>;
-        return <span>{item.remainingClasses}회</span>;
+        if (item.remainingClasses === null && (item.paymentState === "NO_SUBSCRIPTION" || !item.paymentState)) return <span className="text-gray-400">-</span>;
+        const count = item.remainingClasses ?? 0;
+        const needsPayment = item.paymentState === "NEEDS_PAYMENT" || item.paymentState === "NEW";
+        return (
+          <span className="flex items-center gap-1.5">
+            <span>{count}회</span>
+            {needsPayment && <Badge variant={count < 0 ? "overdue" : "pending"}>{count < 0 ? "미결제" : "결제대기"}</Badge>}
+          </span>
+        );
       },
     },
     {
@@ -207,10 +213,17 @@ export default function StudentsPage() {
                       </p>
                     )}
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-gray-500">
-                        {student.paymentState === "NEEDS_PAYMENT" || student.paymentState === "NEW"
-                          ? <Badge variant="overdue">미결제</Badge>
-                          : `잔여 ${student.remainingClasses ?? "-"}회`}
+                      <span className="text-gray-500 flex items-center gap-1.5">
+                        {(() => {
+                          const count = student.remainingClasses ?? 0;
+                          const needsPayment = student.paymentState === "NEEDS_PAYMENT" || student.paymentState === "NEW";
+                          return (
+                            <>
+                              <span>잔여 {student.remainingClasses !== null ? `${count}회` : "-"}</span>
+                              {needsPayment && <Badge variant={count < 0 ? "overdue" : "pending"}>{count < 0 ? "미결제" : "결제대기"}</Badge>}
+                            </>
+                          );
+                        })()}
                       </span>
                     </div>
                   </div>
