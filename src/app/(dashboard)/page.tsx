@@ -11,6 +11,8 @@ import { DraggableChip } from "@/components/schedule/DraggableChip";
 import { DroppableCell } from "@/components/schedule/DroppableCell";
 import { SchedulePopover } from "@/components/schedule/SchedulePopover";
 import { MakeupPicker } from "@/components/schedule/MakeupPicker";
+import { WalkinPicker } from "@/components/schedule/WalkinPicker";
+import { AddTypeMenu } from "@/components/schedule/AddTypeMenu";
 import { celebrate } from "@/lib/celebrate";
 
 interface ScheduleSlot { day: string; time: string; }
@@ -87,6 +89,7 @@ const ATTENDANCE_STYLES: Record<string, { bg: string; label: string }> = {
   ABSENT: { bg: "bg-red-100 text-red-800 border-red-300", label: "결석" },
   LATE: { bg: "bg-yellow-100 text-yellow-800 border-yellow-300", label: "지각" },
   MAKEUP: { bg: "bg-purple-100 text-purple-800 border-purple-300", label: "보강" },
+  WALKIN: { bg: "bg-blue-100 text-blue-800 border-blue-300", label: "추가" },
 };
 
 const ATTENDANCE_BUTTONS = [
@@ -225,8 +228,20 @@ export default function SchedulePage() {
     anchorRect: { top: number; left: number; width: number; height: number };
   } | null>(null);
 
-  // ─── Makeup picker state ─────────────────────────
+  // ─── Add menu / picker state ─────────────────────
+  const [addMenu, setAddMenu] = useState<{
+    dateStr: string;
+    timeSlot: string;
+    existingStudentIds: string[];
+    anchorRect: { top: number; left: number };
+  } | null>(null);
   const [makeupPicker, setMakeupPicker] = useState<{
+    dateStr: string;
+    timeSlot: string;
+    existingStudentIds: string[];
+    anchorRect: { top: number; left: number };
+  } | null>(null);
+  const [walkinPicker, setWalkinPicker] = useState<{
     dateStr: string;
     timeSlot: string;
     existingStudentIds: string[];
@@ -467,7 +482,7 @@ export default function SchedulePage() {
         const previous = queryClient.getQueryData<DailyAttendanceResponse>(["attendance", dailyDate]);
         queryClient.setQueryData<DailyAttendanceResponse>(["attendance", dailyDate], (old) => {
           if (!old) return old;
-          const COUNTED = ["PRESENT", "LATE", "MAKEUP"];
+          const COUNTED = ["PRESENT", "LATE", "MAKEUP", "WALKIN"];
           const existing = old.entries.find(
             (e) => e.studentId === studentId && e.scheduleTime === timeSlot
           );
@@ -559,7 +574,7 @@ export default function SchedulePage() {
         const previous = queryClient.getQueryData<DailyAttendanceResponse>(["attendance", dailyDate]);
         queryClient.setQueryData<DailyAttendanceResponse>(["attendance", dailyDate], (old) => {
           if (!old) return old;
-          return { ...old, entries: old.entries.filter((e) => !(e.studentId === studentId && e.scheduleTime === timeSlot && e.attendance?.status === "MAKEUP")) };
+          return { ...old, entries: old.entries.filter((e) => !(e.studentId === studentId && e.scheduleTime === timeSlot && (e.attendance?.status === "MAKEUP" || e.attendance?.status === "WALKIN"))) };
         });
         return { previous };
       }
@@ -605,7 +620,7 @@ export default function SchedulePage() {
             ...old,
             entries: old.entries.map((e) => {
               if (e.studentId !== studentId || e.scheduleTime !== timeSlot) return e;
-              const wasCounted = e.attendance ? ["PRESENT", "LATE", "MAKEUP"].includes(e.attendance.status) : false;
+              const wasCounted = e.attendance ? ["PRESENT", "LATE", "MAKEUP", "WALKIN"].includes(e.attendance.status) : false;
               return {
                 ...e,
                 attendance: null,
@@ -1048,16 +1063,27 @@ export default function SchedulePage() {
     : null;
   const popoverAttStatus = popoverAttEntry?.status ?? null;
 
-  // ─── Makeup picker ────────────────────────────────
-  const openMakeupPicker = useCallback((e: React.MouseEvent, dateStr: string, timeSlot: string, existingStudentIds: string[]) => {
+  // ─── Add menu / picker ──────────────────────────────
+  const openAddMenu = useCallback((e: React.MouseEvent, dateStr: string, timeSlot: string, existingStudentIds: string[]) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setMakeupPicker({
+    setAddMenu({
       dateStr,
       timeSlot,
       existingStudentIds,
       anchorRect: { top: rect.top, left: rect.left },
     });
   }, []);
+
+  const handleAddTypeSelect = useCallback((type: "makeup" | "walkin") => {
+    if (!addMenu) return;
+    const ctx = { dateStr: addMenu.dateStr, timeSlot: addMenu.timeSlot, existingStudentIds: addMenu.existingStudentIds, anchorRect: addMenu.anchorRect };
+    setAddMenu(null);
+    if (type === "makeup") {
+      setMakeupPicker(ctx);
+    } else {
+      setWalkinPicker(ctx);
+    }
+  }, [addMenu]);
 
   const handleMakeupAdd = useCallback((studentId: string, studentName: string) => {
     if (!makeupPicker) return;
@@ -1070,6 +1096,18 @@ export default function SchedulePage() {
     });
     setMakeupPicker(null);
   }, [makeupPicker, attendanceMutation]);
+
+  const handleWalkinAdd = useCallback((studentId: string, studentName: string) => {
+    if (!walkinPicker) return;
+    attendanceMutation.mutate({
+      studentId,
+      date: walkinPicker.dateStr,
+      status: "WALKIN",
+      timeSlot: walkinPicker.timeSlot,
+      studentName,
+    });
+    setWalkinPicker(null);
+  }, [walkinPicker, attendanceMutation]);
 
   // ─── Month navigation ──────────────────────────────
   function prevMonth() {
@@ -1250,10 +1288,10 @@ export default function SchedulePage() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          openMakeupPicker(e, dailyDate, time, students.map(s => s.studentId));
+                          openAddMenu(e, dailyDate, time, students.map(s => s.studentId));
                         }}
                         className="w-5 h-5 flex items-center justify-center rounded-full hover:bg-purple-100 text-gray-400 hover:text-purple-600 transition-colors"
-                        title="보강 학생 추가"
+                        title="학생 추가"
                       >
                         <Plus className="h-3.5 w-3.5" />
                       </button>
@@ -1421,10 +1459,10 @@ export default function SchedulePage() {
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    openMakeupPicker(e, dateStr, time, students.map(s => s.studentId));
+                                    openAddMenu(e, dateStr, time, students.map(s => s.studentId));
                                   }}
                                   className="w-full flex items-center justify-center py-0.5 rounded hover:bg-purple-50 text-gray-300 hover:text-purple-500 transition-colors"
-                                  title="보강 학생 추가"
+                                  title="학생 추가"
                                 >
                                   <Plus className="h-3 w-3" />
                                 </button>
@@ -1509,10 +1547,10 @@ export default function SchedulePage() {
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    openMakeupPicker(e, dateStr, time, entries.map(s => s.studentId));
+                                    openAddMenu(e, dateStr, time, entries.map(s => s.studentId));
                                   }}
                                   className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-purple-50 text-gray-300 hover:text-purple-500 transition-colors flex-shrink-0"
-                                  title="보강 학생 추가"
+                                  title="학생 추가"
                                 >
                                   <Plus className="h-3.5 w-3.5" />
                                 </button>
@@ -1687,13 +1725,22 @@ export default function SchedulePage() {
               timeSlot: popover.timeSlot,
             });
           } : undefined}
-          onResetAttendance={popoverAttStatus && popoverAttStatus !== "MAKEUP" ? () => {
+          onResetAttendance={popoverAttStatus && popoverAttStatus !== "MAKEUP" && popoverAttStatus !== "WALKIN" ? () => {
             resetAttendanceMutation.mutate({
               studentId: popover.studentId,
               dateStr: popover.dateStr,
               timeSlot: popover.timeSlot,
             });
           } : undefined}
+        />
+      )}
+
+      {/* ─── AddTypeMenu ── */}
+      {addMenu && (
+        <AddTypeMenu
+          anchorRect={addMenu.anchorRect}
+          onSelect={handleAddTypeSelect}
+          onClose={() => setAddMenu(null)}
         />
       )}
 
@@ -1706,6 +1753,16 @@ export default function SchedulePage() {
           onAdd={handleMakeupAdd}
           onClose={() => setMakeupPicker(null)}
           anchorRect={makeupPicker.anchorRect}
+        />
+      )}
+
+      {/* ─── WalkinPicker ── */}
+      {walkinPicker && (
+        <WalkinPicker
+          existingStudentIds={walkinPicker.existingStudentIds}
+          onAdd={handleWalkinAdd}
+          onClose={() => setWalkinPicker(null)}
+          anchorRect={walkinPicker.anchorRect}
         />
       )}
 

@@ -185,7 +185,7 @@ export async function POST(request: NextRequest) {
     if (existing) {
       result = await updateAttendance(existing.id, {
         status,
-        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE || status === AttendanceStatus.MAKEUP
+        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE || status === AttendanceStatus.MAKEUP || status === AttendanceStatus.WALKIN
           ? new Date()
           : null,
       });
@@ -195,7 +195,7 @@ export async function POST(request: NextRequest) {
         date: new Date(date + "T00:00:00Z"),
         timeSlot,
         status,
-        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE || status === AttendanceStatus.MAKEUP
+        checkInAt: status === AttendanceStatus.PRESENT || status === AttendanceStatus.LATE || status === AttendanceStatus.MAKEUP || status === AttendanceStatus.WALKIN
           ? new Date()
           : null,
         note: null,

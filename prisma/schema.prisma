@@ -21,6 +21,7 @@ enum AttendanceStatus {
   ABSENT
   LATE
   MAKEUP
+  WALKIN
 }
 
 enum PaymentMethod {

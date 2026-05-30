@@ -24,7 +24,7 @@ import { formatDate, formatDateShort, formatCurrency, formatTime, DAY_LABELS } f
 import { celebrate } from "@/lib/celebrate";
 
 type StudentStatus = "ACTIVE" | "PAUSED" | "WITHDRAWN";
-type AttendanceStatus = "PRESENT" | "ABSENT" | "LATE" | "MAKEUP";
+type AttendanceStatus = "PRESENT" | "ABSENT" | "LATE" | "MAKEUP" | "WALKIN";
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
 type MemoCategory = "GENERAL" | "PROGRESS" | "ISSUE" | "PARENT_CONTACT" | "OTHER";
 
@@ -133,11 +133,12 @@ const statusBadgeMap: Record<StudentStatus, { variant: "active" | "paused" | "wi
   WITHDRAWN: { variant: "withdrawn", label: "퇴원" },
 };
 
-const attendanceBadgeMap: Record<AttendanceStatus, { variant: "present" | "absent" | "late" | "makeup"; label: string }> = {
+const attendanceBadgeMap: Record<AttendanceStatus, { variant: "present" | "absent" | "late" | "makeup" | "walkin"; label: string }> = {
   PRESENT: { variant: "present", label: "출석" },
   ABSENT: { variant: "absent", label: "결석" },
   LATE: { variant: "late", label: "지각" },
   MAKEUP: { variant: "makeup", label: "보강" },
+  WALKIN: { variant: "walkin", label: "추가" },
 };
 
 const memoCategoryMap: Record<MemoCategory, { variant: "active" | "paused" | "withdrawn" | "present" | "late"; label: string }> = {

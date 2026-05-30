@@ -9,6 +9,7 @@ type BadgeVariant =
   | "absent"
   | "late"
   | "makeup"
+  | "walkin"
   | "paid"
   | "pending"
   | "overdue";
@@ -30,6 +31,7 @@ const variantStyles: Record<BadgeVariant, string> = {
   absent: "bg-red-50 text-red-700 ring-red-600/20",
   late: "bg-amber-50 text-amber-700 ring-amber-600/20",
   makeup: "bg-purple-50 text-purple-700 ring-purple-600/20",
+  walkin: "bg-blue-50 text-blue-700 ring-blue-600/20",
   paid: "bg-green-50 text-green-700 ring-green-600/20",
   pending: "bg-amber-50 text-amber-700 ring-amber-600/20",
   overdue: "bg-red-50 text-red-700 ring-red-600/20",

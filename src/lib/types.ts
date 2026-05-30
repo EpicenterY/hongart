@@ -11,6 +11,7 @@ export enum AttendanceStatus {
   ABSENT = "ABSENT",
   LATE = "LATE",
   MAKEUP = "MAKEUP",
+  WALKIN = "WALKIN",
 }
 
 export enum PaymentMethod {

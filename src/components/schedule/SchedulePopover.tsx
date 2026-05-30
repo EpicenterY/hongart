@@ -65,13 +65,18 @@ export function SchedulePopover({
       className="fixed z-50 w-52 bg-white rounded-xl shadow-lg border border-gray-200 animate-in fade-in zoom-in-95 duration-150"
       style={{ top: `${top}px`, left: `${left}px` }}
     >
-      {currentAttendanceStatus === "MAKEUP" && onCancelMakeup ? (
+      {(currentAttendanceStatus === "MAKEUP" || currentAttendanceStatus === "WALKIN") && onCancelMakeup ? (
         <div className="px-3 py-2.5">
           <button
             onClick={onCancelMakeup}
-            className="w-full py-2.5 rounded-lg text-xs font-bold transition-colors bg-purple-500 hover:bg-purple-600 text-white"
+            className={cn(
+              "w-full py-2.5 rounded-lg text-xs font-bold transition-colors text-white",
+              currentAttendanceStatus === "WALKIN"
+                ? "bg-blue-500 hover:bg-blue-600"
+                : "bg-purple-500 hover:bg-purple-600",
+            )}
           >
-            보강 취소
+            {currentAttendanceStatus === "WALKIN" ? "추가 수업 취소" : "보강 취소"}
           </button>
         </div>
       ) : attendanceButtons && onAttendance ? (
